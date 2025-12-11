@@ -300,6 +300,7 @@
                 this.isTalking = false;
                 this.audioChunks = [];
                 this.currentAudio = null;  // Track current playing audio
+                this.audioQueue = [];      // Queue to prevent multiple audio playing
 
                 this.connectBtn = document.getElementById('connectBtn');
                 this.talkBtn = document.getElementById('talkBtn');
@@ -623,6 +624,14 @@
                 try {
                     console.log('🎵 Received audio data:', { length: base64Data.length, contentType, size });
 
+                    // Stop any currently playing audio first
+                    if (this.currentAudio) {
+                        console.log('🛑 Stopping previous audio before starting new one');
+                        this.currentAudio.pause();
+                        this.currentAudio.currentTime = 0;
+                        this.currentAudio = null;
+                    }
+
                     // Convert base64 to binary and create blob
                     const binaryString = atob(base64Data);
                     const bytes = new Uint8Array(binaryString.length);
@@ -645,7 +654,7 @@
                     const audio = new Audio();
                     audio.crossOrigin = 'anonymous';
                     audio.src = audioUrl;
-                    audio.volume = 0.9;
+                    audio.volume = 1.0;  // Max volume for clarity
                     audio.preload = 'metadata';
 
                     // Track current audio for interruption
@@ -792,15 +801,32 @@
             stopCurrentAudio() {
                 console.log('🛑 Stopping current audio due to interruption');
 
+                // Stop current audio
                 if (this.currentAudio) {
-                    this.currentAudio.pause();
-                    this.currentAudio.currentTime = 0;
-                    this.currentAudio = null;
-                    console.log('🛑 Audio stopped and cleared');
-                    this.addMessage('System', '🛑 Audio playback stopped');
-                } else {
-                    console.log('🛑 No current audio to stop');
+                    try {
+                        this.currentAudio.pause();
+                        this.currentAudio.currentTime = 0;
+                        this.currentAudio.src = '';  // Clear the source
+                        this.currentAudio = null;
+                        console.log('🛑 Current audio stopped and cleared');
+                    } catch (e) {
+                        console.error('Error stopping audio:', e);
+                    }
                 }
+
+                // Stop all audio elements on the page
+                const allAudio = document.getElementsByTagName('audio');
+                for (let i = 0; i < allAudio.length; i++) {
+                    try {
+                        allAudio[i].pause();
+                        allAudio[i].currentTime = 0;
+                        console.log(`🛑 Stopped audio element ${i}`);
+                    } catch (e) {
+                        console.error(`Error stopping audio ${i}:`, e);
+                    }
+                }
+
+                this.addMessage('System', '🛑 All audio playback stopped');
             }
 
             tryAlternativeAudioFormat(base64Data) {

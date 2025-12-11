@@ -179,13 +179,22 @@ class EnhancedVoiceHandler:
                 logger.info("🛑 INTERRUPTION: User interrupted assistant")
                 session['assistant_speaking'] = False
                 session['interrupted'] = True  # Set interruption flag
+
+                # Send stop audio FIRST, then interruption message
+                await websocket.send_json({
+                    "type": "stop_audio",
+                    "message": "Stop current audio playback"
+                })
+
                 await websocket.send_json({
                     "type": "interruption",
                     "message": "🛑 Assistant interrupted - listening to you"
                 })
+
+                # Also send immediate status update
                 await websocket.send_json({
-                    "type": "stop_audio",
-                    "message": "Stop current audio playback"
+                    "type": "processing_status",
+                    "status": "ready"
                 })
 
             await websocket.send_json({
@@ -227,6 +236,15 @@ class EnhancedVoiceHandler:
         """Process complete speech using your working direct API approach"""
         session = self.active_sessions.get(session_id)
         if not session:
+            return
+
+        # Skip processing if we're currently interrupted or assistant is already speaking
+        if session.get('interrupted', False):
+            logger.info("🛑 Skipping speech processing - assistant was interrupted")
+            return
+
+        if session.get('assistant_speaking', False):
+            logger.info("🛑 Skipping speech processing - assistant is already speaking")
             return
 
         websocket = session['websocket']
@@ -313,8 +331,8 @@ class EnhancedVoiceHandler:
                 payload = {
                     "model": "tts-1-hd",  # Use HD model for better quality
                     "input": response_text,
-                    "voice": "alloy",     # Try different voice (alloy is clearer than nova)
-                    "speed": 1.0          # Adjust speed if needed
+                    "voice": "echo",      # Try echo - male voice, very clear
+                    "speed": 0.85         # Slightly slower for clarity
                 }
 
                 headers = {
