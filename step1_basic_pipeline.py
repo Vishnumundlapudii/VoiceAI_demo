@@ -24,14 +24,17 @@ from services.llama_service import LLaMAHTTPService
 from services.tts_service import Speech5HTTPService
 import config
 
-class SimpleFrameLogger:
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+
+class SimpleFrameLogger(FrameProcessor):
     """
     Simple processor to log what frames are flowing through the pipeline
     """
     def __init__(self, name):
+        super().__init__()
         self.name = name
 
-    async def process_frame(self, frame, direction):
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Log each frame that passes through"""
         frame_type = type(frame).__name__
         logger.info(f"[{self.name}] Processing frame: {frame_type}")
