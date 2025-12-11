@@ -342,19 +342,16 @@
                         pcm16[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
                     }
 
-                    // Convert to base64 for Pipecat compatibility
-                    const audioBlob = new Blob([pcm16.buffer], { type: 'audio/wav' });
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                        const base64 = reader.result.split(',')[1]; // Remove data URL prefix
-                        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                            this.ws.send(JSON.stringify({
-                                type: 'audio',
-                                data: base64
-                            }));
-                        }
-                    };
-                    reader.readAsDataURL(audioBlob);
+                    // Create proper WAV file
+                    const wavBuffer = this.createWavFile(pcm16, 16000);
+                    const base64 = btoa(String.fromCharCode(...new Uint8Array(wavBuffer)));
+
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({
+                            type: 'audio',
+                            data: base64
+                        }));
+                    }
                 };
             }
 
@@ -433,6 +430,42 @@
 
             updateVolume(level) {
                 this.volumeBar.style.width = `${Math.min(100, level)}%`;
+            }
+
+            createWavFile(audioData, sampleRate) {
+                const length = audioData.length;
+                const buffer = new ArrayBuffer(44 + length * 2);
+                const view = new DataView(buffer);
+
+                // RIFF header
+                const writeString = (offset, string) => {
+                    for (let i = 0; i < string.length; i++) {
+                        view.setUint8(offset + i, string.charCodeAt(i));
+                    }
+                };
+
+                writeString(0, 'RIFF');
+                view.setUint32(4, 36 + length * 2, true);
+                writeString(8, 'WAVE');
+                writeString(12, 'fmt ');
+                view.setUint32(16, 16, true);
+                view.setUint16(20, 1, true);
+                view.setUint16(22, 1, true);
+                view.setUint32(24, sampleRate, true);
+                view.setUint32(28, sampleRate * 2, true);
+                view.setUint16(32, 2, true);
+                view.setUint16(34, 16, true);
+                writeString(36, 'data');
+                view.setUint32(40, length * 2, true);
+
+                // PCM data
+                let offset = 44;
+                for (let i = 0; i < length; i++) {
+                    view.setInt16(offset, audioData[i], true);
+                    offset += 2;
+                }
+
+                return buffer;
             }
         }
 
