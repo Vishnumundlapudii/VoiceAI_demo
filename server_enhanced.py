@@ -215,8 +215,21 @@ class EnhancedVoiceHandler:
         try:
             import aiohttp
             from openai import AsyncOpenAI
+            import io
+            import wave
 
             logger.info(f"🎯 Processing {len(speech_audio)} bytes of speech")
+
+            # Convert raw audio to proper WAV format
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, 'wb') as wav_file:
+                wav_file.setnchannels(1)  # Mono
+                wav_file.setsampwidth(2)  # 16-bit
+                wav_file.setframerate(config.SAMPLE_RATE)  # 16kHz
+                wav_file.writeframes(speech_audio)
+
+            wav_data = wav_buffer.getvalue()
+            logger.info(f"🎵 Converted to WAV: {len(wav_data)} bytes (was {len(speech_audio)} raw bytes)")
 
             await websocket.send_json({
                 "type": "processing_status",
@@ -226,17 +239,19 @@ class EnhancedVoiceHandler:
             # 1. Transcribe with Whisper (your working approach)
             async with aiohttp.ClientSession() as aio_session:
                 data = aiohttp.FormData()
-                data.add_field('audio', speech_audio, filename='recording.wav', content_type='audio/wav')
+                # Use the proper WAV data instead of raw audio
+                data.add_field('audio', wav_data, filename='recording.wav', content_type='audio/wav')
 
                 async with aio_session.post(config.WHISPER_API, data=data) as response:
                     if response.status == 200:
                         result = await response.json()
                         text = result.get('text', '').strip()
-                        logger.info(f"📝 Transcribed: {text}")
+                        logger.info(f"📝 Whisper Success: {text}")
+                        logger.info(f"📝 Full Whisper response: {result}")
                     else:
                         error_text = await response.text()
                         logger.error(f"❌ Whisper API error {response.status}: {error_text}")
-                        await websocket.send_json({"type": "error", "text": f"Transcription failed: {response.status}"})
+                        await websocket.send_json({"type": "error", "text": f"Whisper API failed: {response.status}"})
                         return
 
             if not text:
