@@ -84,8 +84,8 @@ class WebSocketHandler:
             logger.info("Transcribing audio...")
             async with aiohttp.ClientSession() as session:
                 data = aiohttp.FormData()
-                # faster-whisper expects 'audio_file' field name
-                data.add_field('audio_file', audio_bytes, filename='recording.wav', content_type='audio/wav')
+                # Your Whisper API expects 'audio' field name
+                data.add_field('audio', audio_bytes, filename='recording.wav', content_type='audio/wav')
 
                 async with session.post(config.WHISPER_API, data=data) as response:
                     if response.status == 200:
