@@ -1,1 +1,0 @@
-# Custom service adapters for E2E Networks endpoints

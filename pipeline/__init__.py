@@ -1,1 +1,0 @@
-# Pipecat pipeline for voice assistant
