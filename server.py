@@ -80,15 +80,23 @@ class WebSocketHandler:
             # Decode audio
             audio_bytes = base64.b64decode(base64_audio)
 
-            # 1. Transcribe with Whisper
+            # 1. Transcribe with Whisper (faster-whisper format)
             logger.info("Transcribing audio...")
             async with aiohttp.ClientSession() as session:
                 data = aiohttp.FormData()
-                data.add_field('file', audio_bytes, filename='audio.wav', content_type='audio/wav')
+                # faster-whisper expects 'audio_file' field name
+                data.add_field('audio_file', audio_bytes, filename='recording.wav', content_type='audio/wav')
 
                 async with session.post(config.WHISPER_API, data=data) as response:
-                    result = await response.json()
-                    text = result.get('text', '').strip()
+                    if response.status == 200:
+                        result = await response.json()
+                        text = result.get('text', '').strip()
+                        logger.info(f"Whisper response: {result}")
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Whisper API error {response.status}: {error_text}")
+                        await websocket.send_json({"type": "error", "text": f"Whisper API error: {response.status}"})
+                        return
 
             if not text:
                 return
