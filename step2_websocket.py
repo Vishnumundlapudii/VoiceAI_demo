@@ -45,8 +45,12 @@ class Step2Handler:
             pipeline = self.create_pipeline()
             logger.info("✅ Pipeline created")
 
-            # Create WebSocket transport
-            transport = WebsocketServerTransport(websocket=websocket)
+            # Create WebSocket transport with correct parameters
+            transport = WebsocketServerTransport(
+                host="0.0.0.0",
+                port=8080,
+                websocket=websocket
+            )
             logger.info("✅ Transport created")
 
             # Create pipeline runner
