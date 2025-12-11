@@ -591,7 +591,7 @@
                             this.addMessage('Assistant', message.text);
                             break;
                         case 'audio_response':
-                            this.playAudio(message.data);
+                            this.playAudio(message.data, message.content_type, message.size);
                             break;
                         case 'interruption':
                             this.addMessage('System', '🛑 Interrupted assistant');
@@ -615,9 +615,9 @@
                 return messages[status] || '🔄 Processing...';
             }
 
-            playAudio(base64Data) {
+            playAudio(base64Data, contentType = 'audio/mpeg', size = 0) {
                 try {
-                    console.log('🎵 Received audio data, length:', base64Data.length);
+                    console.log('🎵 Received audio data:', { length: base64Data.length, contentType, size });
 
                     // Convert base64 to binary and create blob
                     const binaryString = atob(base64Data);
@@ -628,8 +628,12 @@
 
                     console.log('🎵 Converted to bytes, length:', bytes.length);
 
+                    // Use server-provided content type, fallback to audio/mpeg
+                    const mimeType = contentType && contentType !== 'unknown' ? contentType : 'audio/mpeg';
+                    console.log('🎵 Using MIME type:', mimeType);
+
                     // Create blob and object URL (more reliable than data URLs for large files)
-                    const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+                    const audioBlob = new Blob([bytes], { type: mimeType });
                     const audioUrl = URL.createObjectURL(audioBlob);
 
                     console.log('🎵 Created blob URL:', audioUrl);

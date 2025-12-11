@@ -294,8 +294,7 @@ class EnhancedVoiceHandler:
                 payload = {
                     "model": "tts-1",
                     "input": response_text,
-                    "voice": "nova",
-                    "response_format": "mp3"
+                    "voice": "nova"
                 }
 
                 headers = {
@@ -305,13 +304,34 @@ class EnhancedVoiceHandler:
 
                 async with aio_session.post(config.TTS_API, json=payload, headers=headers) as tts_response:
                     if tts_response.status == 200:
+                        # Get response headers to understand the format
+                        content_type = tts_response.headers.get('content-type', 'unknown')
+                        logger.info(f"🎵 TTS Response Content-Type: {content_type}")
+
                         audio_data = await tts_response.read()
-                        if audio_data and not session.get('interrupted', False):
+                        logger.info(f"🎵 Received audio data: {len(audio_data)} bytes")
+
+                        # Check if we got valid audio data
+                        if audio_data and len(audio_data) > 100 and not session.get('interrupted', False):
+                            # Check audio format by looking at header bytes
+                            audio_header = audio_data[:12]
+                            logger.info(f"🎵 Audio header bytes: {audio_header[:4]}")
+
                             audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                            await websocket.send_json({"type": "audio_response", "data": audio_b64})
-                            logger.info("🔊 Audio response sent")
+                            await websocket.send_json({
+                                "type": "audio_response",
+                                "data": audio_b64,
+                                "content_type": content_type,
+                                "size": len(audio_data)
+                            })
+                            logger.info(f"🔊 Audio response sent: {len(audio_data)} bytes, type: {content_type}")
+                        else:
+                            logger.error(f"❌ Invalid audio data: {len(audio_data) if audio_data else 0} bytes")
+                            await websocket.send_json({"type": "error", "text": "Invalid audio data received"})
                     else:
-                        logger.error(f"❌ TTS API error: {tts_response.status}")
+                        error_text = await tts_response.text()
+                        logger.error(f"❌ TTS API error {tts_response.status}: {error_text}")
+                        await websocket.send_json({"type": "error", "text": f"TTS API failed: {tts_response.status}"})
 
             # Mark assistant finished speaking
             session['assistant_speaking'] = False
