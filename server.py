@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from pipecat.transports.network.websocket_server import WebsocketServerTransport
+from pipecat.transports.websocket.websocket_server import WebsocketServerTransport
 from pipecat.frames.frames import AudioRawFrame, EndFrame
 
 from pipeline.voice_assistant import create_assistant

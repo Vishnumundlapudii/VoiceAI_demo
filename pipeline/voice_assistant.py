@@ -26,7 +26,7 @@ from pipecat.processors.aggregators.llm_response import (
     LLMUserResponseAggregator
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.services.ai_services import AIService
 
 from loguru import logger
