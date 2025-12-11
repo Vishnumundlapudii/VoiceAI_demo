@@ -619,26 +619,57 @@
                 try {
                     console.log('🎵 Received audio data, length:', base64Data.length);
 
-                    // Create data URL directly from base64 (simpler approach)
-                    const dataUrl = `data:audio/mp3;base64,${base64Data}`;
-                    const audio = new Audio(dataUrl);
+                    // Convert base64 to binary and create blob
+                    const binaryString = atob(base64Data);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
 
-                    console.log('🎵 Created audio element with data URL');
+                    console.log('🎵 Converted to bytes, length:', bytes.length);
 
-                    // Set volume and preload
-                    audio.volume = 0.8;
-                    audio.preload = 'auto';
+                    // Create blob and object URL (more reliable than data URLs for large files)
+                    const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+
+                    console.log('🎵 Created blob URL:', audioUrl);
+
+                    const audio = new Audio();
+                    audio.crossOrigin = 'anonymous';
+                    audio.src = audioUrl;
+                    audio.volume = 0.9;
+                    audio.preload = 'metadata';
+
+                    console.log('🎵 Audio element created, setting up listeners...');
+
+                    let hasStartedPlaying = false;
+
+                    const cleanup = () => {
+                        URL.revokeObjectURL(audioUrl);
+                        console.log('🎵 Cleaned up blob URL');
+                    };
 
                     audio.addEventListener('loadstart', () => {
                         console.log('🎵 Audio loading started');
                     });
 
-                    audio.addEventListener('canplay', () => {
-                        console.log('🎵 Audio can start playing');
+                    audio.addEventListener('loadedmetadata', () => {
+                        console.log('🎵 Audio metadata loaded, duration:', audio.duration);
                     });
 
-                    audio.addEventListener('canplaythrough', () => {
-                        console.log('🎵 Audio ready to play through');
+                    audio.addEventListener('canplay', () => {
+                        console.log('🎵 Audio can start playing');
+                        if (!hasStartedPlaying) {
+                            hasStartedPlaying = true;
+                            audio.play()
+                                .then(() => {
+                                    console.log('🔊 Auto-play succeeded');
+                                })
+                                .catch(e => {
+                                    console.error('❌ Auto-play failed:', e);
+                                    this.handlePlaybackError(audio, e);
+                                });
+                        }
                     });
 
                     audio.addEventListener('playing', () => {
@@ -648,56 +679,101 @@
 
                     audio.addEventListener('ended', () => {
                         console.log('🎵 Audio playback ended');
+                        cleanup();
                     });
 
                     audio.addEventListener('error', (e) => {
                         console.error('❌ Audio error event:', e);
                         console.error('❌ Audio error details:', audio.error);
+                        this.addMessage('System', '❌ Audio playback failed');
+                        cleanup();
 
-                        // Try alternative formats if MP3 fails
-                        console.log('🔄 Trying alternative audio format...');
-                        this.tryAlternativeAudioFormat(base64Data);
+                        // Try fallback approach
+                        this.tryDirectAudioPlay(base64Data);
                     });
 
-                    console.log('🎵 Starting audio playback...');
-
-                    // Try to play the audio
-                    const playPromise = audio.play();
-                    if (playPromise !== undefined) {
-                        playPromise
-                            .then(() => {
-                                console.log('🔊 Audio.play() succeeded');
-                            })
-                            .catch(error => {
-                                console.error('❌ Audio.play() failed:', error);
-
-                                // Handle autoplay restrictions
-                                if (error.name === 'NotAllowedError') {
-                                    this.addMessage('System', '🔊 Click anywhere to enable audio playback');
-
-                                    // Enable audio on next user interaction
-                                    const enableAudio = () => {
-                                        audio.play()
-                                            .then(() => {
-                                                console.log('🔊 Audio enabled after user interaction');
-                                                document.removeEventListener('click', enableAudio);
-                                            })
-                                            .catch(e => {
-                                                console.error('❌ Still failed to play audio:', e);
-                                                this.addMessage('System', '❌ Audio playback not supported');
-                                            });
-                                    };
-                                    document.addEventListener('click', enableAudio, { once: true });
-                                } else {
-                                    console.log('🔄 Trying alternative audio format...');
-                                    this.tryAlternativeAudioFormat(base64Data);
-                                }
-                            });
-                    }
+                    console.log('🎵 Starting audio load...');
+                    audio.load();
 
                 } catch (error) {
                     console.error('❌ Audio processing error:', error);
                     this.addMessage('System', `❌ Audio processing failed: ${error.message}`);
+                }
+            }
+
+            handlePlaybackError(audio, error) {
+                if (error.name === 'NotAllowedError') {
+                    this.addMessage('System', '🔊 Click anywhere to enable audio');
+
+                    const enableAudio = () => {
+                        audio.play()
+                            .then(() => {
+                                console.log('🔊 Audio enabled after user interaction');
+                                document.removeEventListener('click', enableAudio);
+                            })
+                            .catch(e => {
+                                console.error('❌ Still failed to play audio:', e);
+                                this.tryDirectAudioPlay(audio.src.split(',')[1]); // Extract base64
+                            });
+                    };
+                    document.addEventListener('click', enableAudio, { once: true });
+                } else {
+                    this.tryDirectAudioPlay(audio.src.split(',')[1]); // Extract base64
+                }
+            }
+
+            tryDirectAudioPlay(base64Data) {
+                console.log('🔄 Trying direct audio play with different approaches...');
+
+                // Method 1: Direct data URL
+                const dataUrl = `data:audio/mpeg;base64,${base64Data}`;
+                const audio1 = new Audio(dataUrl);
+
+                audio1.addEventListener('canplaythrough', () => {
+                    console.log('🔊 Direct data URL method worked!');
+                    audio1.play()
+                        .then(() => {
+                            this.addMessage('System', '🔊 Audio playing (fallback method)');
+                        })
+                        .catch(console.error);
+                });
+
+                audio1.addEventListener('error', () => {
+                    console.log('❌ Direct data URL failed, trying audio context...');
+                    this.tryWebAudioAPI(base64Data);
+                });
+
+                audio1.load();
+            }
+
+            async tryWebAudioAPI(base64Data) {
+                try {
+                    console.log('🔄 Trying Web Audio API...');
+
+                    const binaryString = atob(base64Data);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+
+                    const audioContext = this.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+
+                    if (audioContext.state === 'suspended') {
+                        await audioContext.resume();
+                    }
+
+                    const audioBuffer = await audioContext.decodeAudioData(bytes.buffer.slice());
+                    const source = audioContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioContext.destination);
+
+                    source.start();
+                    console.log('🔊 Web Audio API playback started');
+                    this.addMessage('System', '🔊 Audio playing (Web Audio API)');
+
+                } catch (error) {
+                    console.error('❌ Web Audio API failed:', error);
+                    this.addMessage('System', '❌ All audio playback methods failed');
                 }
             }
 
@@ -707,8 +783,9 @@
 
                     // Try different MIME types
                     const formats = [
-                        'data:audio/mpeg;base64,',
                         'data:audio/wav;base64,',
+                        'data:audio/mpeg;base64,',
+                        'data:audio/mp3;base64,',
                         'data:audio/ogg;base64,',
                         'data:audio/*;base64,'
                     ];
