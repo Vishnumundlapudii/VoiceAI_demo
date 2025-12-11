@@ -615,8 +615,10 @@
                 return messages[status] || '🔄 Processing...';
             }
 
-            playAudio(base64Data) {
+            async playAudio(base64Data) {
                 try {
+                    console.log('🎵 Received audio data, length:', base64Data.length);
+
                     // Convert base64 to binary
                     const binaryString = atob(base64Data);
                     const bytes = new Uint8Array(binaryString.length);
@@ -624,36 +626,112 @@
                         bytes[i] = binaryString.charCodeAt(i);
                     }
 
-                    // Create audio blob with proper MP3 MIME type
-                    const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
-                    const audioUrl = URL.createObjectURL(audioBlob);
+                    console.log('🎵 Converted to bytes, length:', bytes.length);
 
+                    // Try multiple MIME types to ensure compatibility
+                    const mimeTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav'];
+                    let audioBlob;
+                    let successfulMimeType = null;
+
+                    for (const mimeType of mimeTypes) {
+                        try {
+                            audioBlob = new Blob([bytes], { type: mimeType });
+                            const audioUrl = URL.createObjectURL(audioBlob);
+                            const testAudio = new Audio(audioUrl);
+
+                            // Test if this MIME type works
+                            await new Promise((resolve, reject) => {
+                                testAudio.addEventListener('canplaythrough', resolve);
+                                testAudio.addEventListener('error', reject);
+                                testAudio.load();
+                                // Timeout after 2 seconds
+                                setTimeout(reject, 2000);
+                            });
+
+                            URL.revokeObjectURL(audioUrl);
+                            successfulMimeType = mimeType;
+                            console.log('🎵 MIME type that works:', mimeType);
+                            break;
+                        } catch (e) {
+                            console.log(`❌ MIME type ${mimeType} failed:`, e);
+                        }
+                    }
+
+                    if (!successfulMimeType) {
+                        // Fallback: try without MIME type detection
+                        audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+                        successfulMimeType = 'audio/mpeg';
+                        console.log('🎵 Using fallback MIME type: audio/mpeg');
+                    }
+
+                    const audioUrl = URL.createObjectURL(audioBlob);
                     const audio = new Audio(audioUrl);
 
+                    // Set volume and preload
+                    audio.volume = 0.8;
+                    audio.preload = 'auto';
+
+                    console.log('🎵 Created audio element, starting playback...');
+
+                    audio.addEventListener('loadstart', () => {
+                        console.log('🎵 Audio loading started');
+                    });
+
+                    audio.addEventListener('canplay', () => {
+                        console.log('🎵 Audio can start playing');
+                    });
+
                     audio.addEventListener('canplaythrough', () => {
-                        console.log('🔊 Audio ready to play');
+                        console.log('🎵 Audio ready to play through');
                     });
 
-                    audio.addEventListener('error', (e) => {
-                        console.error('❌ Audio play error:', e);
-                        console.error('Audio error details:', audio.error);
+                    audio.addEventListener('playing', () => {
+                        console.log('🔊 Audio is now playing');
+                        this.addMessage('System', '🔊 Audio response playing');
                     });
 
-                    audio.play()
-                        .then(() => {
-                            console.log('🔊 Audio playback started');
-                        })
-                        .catch(e => {
-                            console.error('❌ Audio play failed:', e);
-                        });
-
-                    // Clean up the blob URL after audio finishes
                     audio.addEventListener('ended', () => {
+                        console.log('🎵 Audio playback ended');
                         URL.revokeObjectURL(audioUrl);
                     });
 
+                    audio.addEventListener('error', (e) => {
+                        console.error('❌ Audio error event:', e);
+                        console.error('❌ Audio error details:', audio.error);
+                        this.addMessage('System', '❌ Audio playback failed');
+                        URL.revokeObjectURL(audioUrl);
+                    });
+
+                    // Try to play the audio
+                    try {
+                        await audio.play();
+                        console.log('🔊 Audio.play() succeeded');
+                    } catch (playError) {
+                        console.error('❌ Audio.play() failed:', playError);
+
+                        // Handle autoplay restrictions
+                        if (playError.name === 'NotAllowedError') {
+                            this.addMessage('System', '🔊 Click anywhere to enable audio playback');
+
+                            // Enable audio on next user interaction
+                            const enableAudio = async () => {
+                                try {
+                                    await audio.play();
+                                    console.log('🔊 Audio enabled after user interaction');
+                                    document.removeEventListener('click', enableAudio);
+                                } catch (e) {
+                                    console.error('❌ Still failed to play audio:', e);
+                                }
+                            };
+                            document.addEventListener('click', enableAudio, { once: true });
+                        } else {
+                            this.addMessage('System', `❌ Audio error: ${playError.message}`);
+                        }
+                    }
+
                 } catch (error) {
                     console.error('❌ Audio processing error:', error);
+                    this.addMessage('System', `❌ Audio processing failed: ${error.message}`);
                 }
             }
 
