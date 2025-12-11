@@ -53,10 +53,16 @@ class WebSocketHandler:
 
             # Create WebSocket transport for Pipecat
             # For Pipecat 0.0.36, use FastAPIWebsocketTransport
-            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
+            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
 
             self.transport = FastAPIWebsocketTransport(
-                websocket=websocket
+                websocket=websocket,
+                params=FastAPIWebsocketParams(
+                    audio_in_enabled=True,
+                    audio_out_enabled=True,
+                    transcription_enabled=True,
+                    vad_enabled=True
+                )
             )
 
             # Run the pipeline with transport
