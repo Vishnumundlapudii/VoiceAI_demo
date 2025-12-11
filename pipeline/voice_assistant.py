@@ -138,10 +138,18 @@ class VoiceAssistantPipeline:
         # Create conversation manager
         conversation_manager = ConversationManager()
 
-        # Build pipeline without VAD in the pipeline chain
-        # VAD will be handled by the transport layer
+        # Create VAD analyzer
+        vad_analyzer = SileroVADAnalyzer(
+            params=VADParams(
+                confidence_threshold=config.VAD_THRESHOLD,
+                silence_duration_ms=int(config.END_OF_SPEECH_THRESHOLD * 1000)
+            )
+        )
+
+        # Build pipeline with VAD
         pipeline = Pipeline([
-            # Input audio → Whisper
+            # VAD → Whisper
+            vad_analyzer,
             whisper_service,
 
             # Transcription → Conversation Manager → LLaMA

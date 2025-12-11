@@ -50,22 +50,8 @@ class PipecatWebSocketHandler:
         try:
             logger.info(f"New WebSocket connection: {connection_id}")
 
-            # Create Pipecat transport
-            transport = FastAPIWebsocketTransport(
-                websocket=websocket,
-                params=FastAPIWebsocketParams(
-                    audio_out_enabled=True,
-                    add_wav_header=False,
-                    vad_enabled=True,
-                    vad_analyzer=SileroVADAnalyzer(
-                        params=VADParams(
-                            confidence_threshold=config.VAD_THRESHOLD,
-                            silence_duration_ms=int(config.END_OF_SPEECH_THRESHOLD * 1000)
-                        )
-                    ),
-                    vad_audio_passthrough=True
-                )
-            )
+            # Create Pipecat transport with default parameters
+            transport = FastAPIWebsocketTransport(websocket=websocket)
 
             # Store connection
             self.active_connections[connection_id] = {
