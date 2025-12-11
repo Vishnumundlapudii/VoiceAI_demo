@@ -54,23 +54,16 @@ class WebSocketHandler:
             # Create WebSocket transport for Pipecat
             # For Pipecat 0.0.36, use FastAPIWebsocketTransport
             from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
-            from pipecat.serializers.base_serializer import FrameSerializer
-            from pipecat.vad.silero import SileroVADAnalyzer
-
-            # Create VAD analyzer for transport
-            vad = SileroVADAnalyzer(
-                sample_rate=16000
-            )
 
             self.transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
                     audio_out_enabled=True,
                     add_wav_header=False,
-                    vad_enabled=True,
-                    vad_analyzer=vad,
-                    vad_audio_passthrough=True,
-                    serializer=FrameSerializer()
+                    vad_enabled=False,
+                    vad_analyzer=None,
+                    vad_audio_passthrough=False,
+                    serializer=None
                 )
             )
 
