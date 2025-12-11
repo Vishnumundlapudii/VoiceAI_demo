@@ -1,0 +1,12 @@
+pipecat-ai[silero]
+openai
+fastapi
+uvicorn[standard]
+websockets
+python-multipart
+aiofiles
+requests
+sounddevice
+numpy
+python-dotenv
+loguru

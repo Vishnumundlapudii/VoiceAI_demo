@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E2E Voice Assistant - Pipecat</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+
+        .subtitle {
+            text-align: center;
+            opacity: 0.9;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+        }
+
+        .status {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .status.connected {
+            background: rgba(76, 175, 80, 0.3);
+        }
+
+        .status.disconnected {
+            background: rgba(244, 67, 54, 0.3);
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin: 30px 0;
+        }
+
+        button {
+            background: white;
+            color: #667eea;
+            border: none;
+            border-radius: 50%;
+            width: 80px;
+            height: 80px;
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.active {
+            background: #ff4444;
+            color: white;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(255, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 68, 68, 0); }
+        }
+
+        .transcript {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 150px;
+            margin-top: 20px;
+        }
+
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 8px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .user-message {
+            background: rgba(102, 126, 234, 0.3);
+            text-align: right;
+        }
+
+        .assistant-message {
+            background: rgba(118, 75, 162, 0.3);
+            text-align: left;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .volume-meter {
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+
+        .volume-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50, #ffeb3b, #ff9800, #f44336);
+            width: 0%;
+            transition: width 0.1s ease;
+        }
+
+        .tech-stack {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 0.8em;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ E2E Voice Assistant</h1>
+        <p class="subtitle">Powered by Pipecat Framework</p>
+
+        <div id="status" class="status disconnected">
+            <span id="statusText">Disconnected</span>
+        </div>
+
+        <div class="controls">
+            <button id="connectBtn" title="Connect">
+                🔌
+            </button>
+            <button id="talkBtn" disabled title="Push to Talk">
+                🎤
+            </button>
+        </div>
+
+        <div class="volume-meter">
+            <div id="volumeBar" class="volume-bar"></div>
+        </div>
+
+        <div class="transcript" id="transcript">
+            <div style="text-align: center; opacity: 0.5;">
+                Click Connect to start...
+            </div>
+        </div>
+
+        <div class="tech-stack">
+            Whisper ASR → LLaMA 3.3 70B → Speech5 TTS
+            <div id="latency" style="margin-top: 10px; color: #4caf50;"></div>
+        </div>
+    </div>
+
+    <script>
+        class VoiceAssistant {
+            constructor() {
+                this.ws = null;
+                this.mediaStream = null;
+                this.audioContext = null;
+                this.processor = null;
+                this.isConnected = false;
+                this.isTalking = false;
+
+                this.connectBtn = document.getElementById('connectBtn');
+                this.talkBtn = document.getElementById('talkBtn');
+                this.statusEl = document.getElementById('status');
+                this.statusText = document.getElementById('statusText');
+                this.transcript = document.getElementById('transcript');
+                this.volumeBar = document.getElementById('volumeBar');
+
+                this.setupEventListeners();
+            }
+
+            setupEventListeners() {
+                this.connectBtn.addEventListener('click', () => this.toggleConnection());
+
+                this.talkBtn.addEventListener('mousedown', () => this.startTalking());
+                this.talkBtn.addEventListener('mouseup', () => this.stopTalking());
+                this.talkBtn.addEventListener('mouseleave', () => this.stopTalking());
+
+                // Touch events for mobile
+                this.talkBtn.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    this.startTalking();
+                });
+                this.talkBtn.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    this.stopTalking();
+                });
+            }
+
+            async toggleConnection() {
+                if (this.isConnected) {
+                    this.disconnect();
+                } else {
+                    await this.connect();
+                }
+            }
+
+            async connect() {
+                try {
+                    // Get user media
+                    this.mediaStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            sampleRate: 16000
+                        }
+                    });
+
+                    // Setup audio context
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000
+                    });
+
+                    // Connect to WebSocket
+                    const wsUrl = `ws://${window.location.hostname}:8080/ws`;
+                    this.ws = new WebSocket(wsUrl);
+
+                    this.ws.onopen = () => {
+                        this.isConnected = true;
+                        this.updateStatus('Connected', true);
+                        this.connectBtn.innerHTML = '🔴';
+                        this.talkBtn.disabled = false;
+                        this.addMessage('System', 'Connected to voice assistant');
+                    };
+
+                    this.ws.onclose = () => {
+                        this.disconnect();
+                    };
+
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.addMessage('System', 'Connection error');
+                        this.disconnect();
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        this.handleMessage(event.data);
+                    };
+
+                } catch (error) {
+                    console.error('Failed to connect:', error);
+                    this.addMessage('System', 'Failed to access microphone');
+                }
+            }
+
+            disconnect() {
+                if (this.ws) {
+                    this.ws.close();
+                    this.ws = null;
+                }
+
+                if (this.mediaStream) {
+                    this.mediaStream.getTracks().forEach(track => track.stop());
+                    this.mediaStream = null;
+                }
+
+                if (this.audioContext) {
+                    this.audioContext.close();
+                    this.audioContext = null;
+                }
+
+                this.isConnected = false;
+                this.updateStatus('Disconnected', false);
+                this.connectBtn.innerHTML = '🔌';
+                this.talkBtn.disabled = true;
+            }
+
+            async startTalking() {
+                if (!this.isConnected || this.isTalking) return;
+
+                this.isTalking = true;
+                this.talkBtn.classList.add('active');
+
+                // Setup audio processing
+                const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+                this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+                source.connect(this.processor);
+                this.processor.connect(this.audioContext.destination);
+
+                this.processor.onaudioprocess = (e) => {
+                    if (!this.isTalking) return;
+
+                    const inputData = e.inputBuffer.getChannelData(0);
+
+                    // Calculate volume
+                    let sum = 0;
+                    for (let i = 0; i < inputData.length; i++) {
+                        sum += Math.abs(inputData[i]);
+                    }
+                    const volume = sum / inputData.length;
+                    this.updateVolume(volume * 500);
+
+                    // Convert to 16-bit PCM
+                    const pcm16 = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        pcm16[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+                    }
+
+                    // Send audio data
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({
+                            type: 'audio',
+                            data: Array.from(pcm16)
+                        }));
+                    }
+                };
+            }
+
+            stopTalking() {
+                if (!this.isTalking) return;
+
+                this.isTalking = false;
+                this.talkBtn.classList.remove('active');
+
+                if (this.processor) {
+                    this.processor.disconnect();
+                    this.processor = null;
+                }
+
+                this.updateVolume(0);
+
+                // Send end of speech signal
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        type: 'end_of_speech'
+                    }));
+                }
+            }
+
+            handleMessage(data) {
+                try {
+                    const message = JSON.parse(data);
+
+                    switch (message.type) {
+                        case 'transcription':
+                            this.addMessage('You', message.text);
+                            break;
+                        case 'response':
+                            this.addMessage('Assistant', message.text);
+                            break;
+                        case 'audio':
+                            this.playAudio(message.data);
+                            break;
+                        case 'error':
+                            this.addMessage('System', `Error: ${message.text}`);
+                            break;
+                    }
+                } catch (error) {
+                    console.error('Failed to parse message:', error);
+                }
+            }
+
+            playAudio(audioData) {
+                // Convert audio data and play
+                const audioArray = new Int16Array(audioData);
+                const audioBuffer = this.audioContext.createBuffer(1, audioArray.length, 16000);
+                const channelData = audioBuffer.getChannelData(0);
+
+                for (let i = 0; i < audioArray.length; i++) {
+                    channelData[i] = audioArray[i] / 32768;
+                }
+
+                const source = this.audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(this.audioContext.destination);
+                source.start();
+            }
+
+            addMessage(sender, text) {
+                const messageClass = sender === 'You' ? 'user-message' :
+                                   sender === 'Assistant' ? 'assistant-message' : '';
+
+                const messageHtml = `
+                    <div class="message ${messageClass}">
+                        <strong>${sender}:</strong> ${text}
+                    </div>
+                `;
+
+                this.transcript.innerHTML += messageHtml;
+                this.transcript.scrollTop = this.transcript.scrollHeight;
+            }
+
+            updateStatus(text, connected) {
+                this.statusText.textContent = text;
+                this.statusEl.className = `status ${connected ? 'connected' : 'disconnected'}`;
+            }
+
+            updateVolume(level) {
+                this.volumeBar.style.width = `${Math.min(100, level)}%`;
+            }
+        }
+
+        // Initialize the assistant when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            new VoiceAssistant();
+        });
+    </script>
+</body>
+</html>
