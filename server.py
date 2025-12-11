@@ -16,6 +16,8 @@ from pipecat.frames.frames import AudioRawFrame, EndFrame
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
+from pipecat.vad.silero import SileroVADAnalyzer
+from pipecat.vad.vad_analyzer import VADParams
 
 from pipeline.voice_assistant import create_assistant
 from loguru import logger
@@ -55,12 +57,21 @@ class WebSocketHandler:
             # Create WebSocket transport for Pipecat
             from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
 
+            # Create VAD analyzer
+            vad_analyzer = SileroVADAnalyzer(
+                params=VADParams(
+                    sample_rate=16000,
+                    num_channels=1,
+                    threshold=0.5
+                )
+            )
+
             # Create params with ALL required fields
             params = FastAPIWebsocketParams(
                 audio_out_enabled=True,
                 add_wav_header=False,
-                vad_enabled=False,
-                vad_analyzer=None,
+                vad_enabled=True,
+                vad_analyzer=vad_analyzer,
                 vad_audio_passthrough=False,
                 serializer=ProtobufFrameSerializer(),
                 transcription_enabled=False,
