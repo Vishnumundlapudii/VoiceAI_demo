@@ -294,10 +294,16 @@ class EnhancedVoiceHandler:
                 payload = {
                     "model": "tts-1",
                     "input": response_text,
-                    "voice": "nova"
+                    "voice": "nova",
+                    "response_format": "mp3"
                 }
 
-                async with aio_session.post(config.TTS_API, json=payload) as tts_response:
+                headers = {
+                    "Authorization": f"Bearer {config.E2E_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+
+                async with aio_session.post(config.TTS_API, json=payload, headers=headers) as tts_response:
                     if tts_response.status == 200:
                         audio_data = await tts_response.read()
                         if audio_data and not session.get('interrupted', False):

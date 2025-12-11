@@ -615,63 +615,19 @@
                 return messages[status] || '🔄 Processing...';
             }
 
-            async playAudio(base64Data) {
+            playAudio(base64Data) {
                 try {
                     console.log('🎵 Received audio data, length:', base64Data.length);
 
-                    // Convert base64 to binary
-                    const binaryString = atob(base64Data);
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
+                    // Create data URL directly from base64 (simpler approach)
+                    const dataUrl = `data:audio/mp3;base64,${base64Data}`;
+                    const audio = new Audio(dataUrl);
 
-                    console.log('🎵 Converted to bytes, length:', bytes.length);
-
-                    // Try multiple MIME types to ensure compatibility
-                    const mimeTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav'];
-                    let audioBlob;
-                    let successfulMimeType = null;
-
-                    for (const mimeType of mimeTypes) {
-                        try {
-                            audioBlob = new Blob([bytes], { type: mimeType });
-                            const audioUrl = URL.createObjectURL(audioBlob);
-                            const testAudio = new Audio(audioUrl);
-
-                            // Test if this MIME type works
-                            await new Promise((resolve, reject) => {
-                                testAudio.addEventListener('canplaythrough', resolve);
-                                testAudio.addEventListener('error', reject);
-                                testAudio.load();
-                                // Timeout after 2 seconds
-                                setTimeout(reject, 2000);
-                            });
-
-                            URL.revokeObjectURL(audioUrl);
-                            successfulMimeType = mimeType;
-                            console.log('🎵 MIME type that works:', mimeType);
-                            break;
-                        } catch (e) {
-                            console.log(`❌ MIME type ${mimeType} failed:`, e);
-                        }
-                    }
-
-                    if (!successfulMimeType) {
-                        // Fallback: try without MIME type detection
-                        audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
-                        successfulMimeType = 'audio/mpeg';
-                        console.log('🎵 Using fallback MIME type: audio/mpeg');
-                    }
-
-                    const audioUrl = URL.createObjectURL(audioBlob);
-                    const audio = new Audio(audioUrl);
+                    console.log('🎵 Created audio element with data URL');
 
                     // Set volume and preload
                     audio.volume = 0.8;
                     audio.preload = 'auto';
-
-                    console.log('🎵 Created audio element, starting playback...');
 
                     audio.addEventListener('loadstart', () => {
                         console.log('🎵 Audio loading started');
@@ -692,46 +648,110 @@
 
                     audio.addEventListener('ended', () => {
                         console.log('🎵 Audio playback ended');
-                        URL.revokeObjectURL(audioUrl);
                     });
 
                     audio.addEventListener('error', (e) => {
                         console.error('❌ Audio error event:', e);
                         console.error('❌ Audio error details:', audio.error);
-                        this.addMessage('System', '❌ Audio playback failed');
-                        URL.revokeObjectURL(audioUrl);
+
+                        // Try alternative formats if MP3 fails
+                        console.log('🔄 Trying alternative audio format...');
+                        this.tryAlternativeAudioFormat(base64Data);
                     });
 
+                    console.log('🎵 Starting audio playback...');
+
                     // Try to play the audio
-                    try {
-                        await audio.play();
-                        console.log('🔊 Audio.play() succeeded');
-                    } catch (playError) {
-                        console.error('❌ Audio.play() failed:', playError);
+                    const playPromise = audio.play();
+                    if (playPromise !== undefined) {
+                        playPromise
+                            .then(() => {
+                                console.log('🔊 Audio.play() succeeded');
+                            })
+                            .catch(error => {
+                                console.error('❌ Audio.play() failed:', error);
 
-                        // Handle autoplay restrictions
-                        if (playError.name === 'NotAllowedError') {
-                            this.addMessage('System', '🔊 Click anywhere to enable audio playback');
+                                // Handle autoplay restrictions
+                                if (error.name === 'NotAllowedError') {
+                                    this.addMessage('System', '🔊 Click anywhere to enable audio playback');
 
-                            // Enable audio on next user interaction
-                            const enableAudio = async () => {
-                                try {
-                                    await audio.play();
-                                    console.log('🔊 Audio enabled after user interaction');
-                                    document.removeEventListener('click', enableAudio);
-                                } catch (e) {
-                                    console.error('❌ Still failed to play audio:', e);
+                                    // Enable audio on next user interaction
+                                    const enableAudio = () => {
+                                        audio.play()
+                                            .then(() => {
+                                                console.log('🔊 Audio enabled after user interaction');
+                                                document.removeEventListener('click', enableAudio);
+                                            })
+                                            .catch(e => {
+                                                console.error('❌ Still failed to play audio:', e);
+                                                this.addMessage('System', '❌ Audio playback not supported');
+                                            });
+                                    };
+                                    document.addEventListener('click', enableAudio, { once: true });
+                                } else {
+                                    console.log('🔄 Trying alternative audio format...');
+                                    this.tryAlternativeAudioFormat(base64Data);
                                 }
-                            };
-                            document.addEventListener('click', enableAudio, { once: true });
-                        } else {
-                            this.addMessage('System', `❌ Audio error: ${playError.message}`);
-                        }
+                            });
                     }
 
                 } catch (error) {
                     console.error('❌ Audio processing error:', error);
                     this.addMessage('System', `❌ Audio processing failed: ${error.message}`);
+                }
+            }
+
+            tryAlternativeAudioFormat(base64Data) {
+                try {
+                    console.log('🔄 Trying alternative formats...');
+
+                    // Try different MIME types
+                    const formats = [
+                        'data:audio/mpeg;base64,',
+                        'data:audio/wav;base64,',
+                        'data:audio/ogg;base64,',
+                        'data:audio/*;base64,'
+                    ];
+
+                    for (let i = 0; i < formats.length; i++) {
+                        const dataUrl = formats[i] + base64Data;
+                        const audio = new Audio(dataUrl);
+
+                        audio.addEventListener('canplaythrough', () => {
+                            console.log(`🎵 Format ${i} (${formats[i].split(';')[0]}) works!`);
+                            audio.play()
+                                .then(() => {
+                                    console.log('🔊 Alternative format playback succeeded');
+                                    this.addMessage('System', '🔊 Audio response playing (alternative format)');
+                                })
+                                .catch(e => {
+                                    console.error('❌ Alternative format play failed:', e);
+                                });
+                        });
+
+                        audio.addEventListener('error', (e) => {
+                            console.log(`❌ Format ${i} failed:`, e);
+                            if (i === formats.length - 1) {
+                                this.addMessage('System', '❌ All audio formats failed');
+                            }
+                        });
+
+                        audio.load();
+
+                        // Only try one at a time
+                        if (i === 0) {
+                            setTimeout(() => {
+                                if (audio.readyState === 0) {
+                                    console.log('🔄 First format timed out, trying next...');
+                                    this.tryAlternativeAudioFormat(base64Data);
+                                }
+                            }, 2000);
+                            break;
+                        }
+                    }
+                } catch (error) {
+                    console.error('❌ Alternative format error:', error);
+                    this.addMessage('System', '❌ No supported audio format found');
                 }
             }
 
