@@ -52,11 +52,23 @@ class WebSocketHandler:
             self.assistant = create_assistant()
 
             # Create WebSocket transport for Pipecat
-            # For Pipecat 0.0.36, use FastAPIWebsocketTransport without params
-            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
+            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
+
+            # Create params with ALL required fields
+            params = FastAPIWebsocketParams(
+                audio_out_enabled=True,
+                add_wav_header=False,
+                vad_enabled=False,
+                vad_analyzer=None,
+                vad_audio_passthrough=False,
+                serializer=None,
+                transcription_enabled=False,
+                interim_results_enabled=False
+            )
 
             self.transport = FastAPIWebsocketTransport(
-                websocket=websocket
+                websocket=websocket,
+                params=params
             )
 
             # Run the pipeline with transport
