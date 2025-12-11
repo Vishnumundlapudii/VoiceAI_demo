@@ -1,7 +1,8 @@
 # Pipecat Voice Assistant Requirements
-# Core package with all dependencies managed by pipecat
+# Core package - using 0.0.20 for Python 3.9 compatibility
+# Note: For Python 3.10+, you can use pipecat-ai==0.0.36
 
-pipecat-ai[silero,audio]==0.0.97
+pipecat-ai[silero,audio]==0.0.20
 
 # Additional packages that pipecat doesn't include
 fastapi==0.111.0

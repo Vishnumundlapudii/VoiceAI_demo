@@ -23,7 +23,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.vad.vad_analyzer import VADAnalyzer, VADParams
-from pipecat.vad.silero_vad_analyzer import SileroVADAnalyzer
+from pipecat.vad.silero import SileroVADAnalyzer
 from pipecat.services.ai_services import AIService
 
 from loguru import logger

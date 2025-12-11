@@ -11,10 +11,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-# Pipecat imports for 0.0.97
+# Pipecat imports for 0.0.20
 from pipecat.frames.frames import AudioRawFrame, EndFrame
 from pipecat.transports.base_transport import BaseTransport
-from pipecat.transports.websocket import WebsocketTransport, WebsocketTransportParams
+from pipecat.transports.network.websocket_server import WebsocketServerTransport, WebsocketServerParams
 
 from pipeline.voice_assistant import create_assistant
 from loguru import logger
@@ -52,9 +52,9 @@ class WebSocketHandler:
             self.assistant = create_assistant()
 
             # Create WebSocket transport for Pipecat
-            self.transport = WebsocketTransport(
+            self.transport = WebsocketServerTransport(
                 websocket=websocket,
-                params=WebsocketTransportParams(
+                params=WebsocketServerParams(
                     audio_in_enabled=True,
                     audio_out_enabled=True,
                     transcription_enabled=True,
