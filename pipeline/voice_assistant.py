@@ -21,12 +21,9 @@ from pipecat.frames.frames import (
     LLMMessagesFrame,
     EndFrame
 )
-from pipecat.processors.aggregators.llm_response import (
-    LLMAssistantResponseAggregator,
-    LLMUserResponseAggregator
-)
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.vad.vad_analyzer import VADAnalyzer, VADParams
+from pipecat.vad.silero_vad_analyzer import SileroVADAnalyzer
 from pipecat.services.ai_services import AIService
 
 from loguru import logger
@@ -107,9 +104,12 @@ class VoiceAssistantPipeline:
         )
 
         # Create VAD for voice activity detection
-        vad = SileroVADAnalyzer(
-            sample_rate=config.SAMPLE_RATE,
-            num_channels=config.CHANNELS
+        vad_analyzer = SileroVADAnalyzer(
+            params=VADParams(
+                sample_rate=config.SAMPLE_RATE,
+                num_channels=config.CHANNELS,
+                threshold=config.VAD_THRESHOLD
+            )
         )
 
         # Create conversation manager
@@ -118,7 +118,7 @@ class VoiceAssistantPipeline:
         # Build pipeline
         pipeline = Pipeline([
             # Input audio → VAD → Whisper
-            vad,
+            vad_analyzer,
             whisper_service,
 
             # Transcription → Conversation Manager → LLaMA

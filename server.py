@@ -11,8 +11,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from pipecat.transports.websocket.websocket_server import WebsocketServerTransport
+# Pipecat imports for 0.0.97
 from pipecat.frames.frames import AudioRawFrame, EndFrame
+from pipecat.transports.base_transport import BaseTransport
+from pipecat.transports.websocket import WebsocketTransport, WebsocketTransportParams
 
 from pipeline.voice_assistant import create_assistant
 from loguru import logger
@@ -49,10 +51,10 @@ class WebSocketHandler:
             # Create assistant pipeline
             self.assistant = create_assistant()
 
-            # Create WebSocket transport
-            self.transport = WebsocketServerTransport(
+            # Create WebSocket transport for Pipecat
+            self.transport = WebsocketTransport(
                 websocket=websocket,
-                params=WebsocketServerTransport.Params(
+                params=WebsocketTransportParams(
                     audio_in_enabled=True,
                     audio_out_enabled=True,
                     transcription_enabled=True,
@@ -60,13 +62,15 @@ class WebSocketHandler:
                 )
             )
 
-            # Run the pipeline
+            # Run the pipeline with transport
             await self.assistant.run(self.transport)
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected")
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             if self.assistant:
                 await self.assistant.stop()
