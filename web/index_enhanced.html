@@ -616,12 +616,45 @@
             }
 
             playAudio(base64Data) {
-                const binaryString = atob(base64Data);
-                const audioBlob = new Blob([new Uint8Array([...binaryString].map(char => char.charCodeAt(0)))], {type: 'audio/wav'});
-                const audioUrl = URL.createObjectURL(audioBlob);
+                try {
+                    // Convert base64 to binary
+                    const binaryString = atob(base64Data);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
 
-                const audio = new Audio(audioUrl);
-                audio.play().catch(e => console.error('Audio play error:', e));
+                    // Create audio blob with proper MP3 MIME type
+                    const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+
+                    const audio = new Audio(audioUrl);
+
+                    audio.addEventListener('canplaythrough', () => {
+                        console.log('🔊 Audio ready to play');
+                    });
+
+                    audio.addEventListener('error', (e) => {
+                        console.error('❌ Audio play error:', e);
+                        console.error('Audio error details:', audio.error);
+                    });
+
+                    audio.play()
+                        .then(() => {
+                            console.log('🔊 Audio playback started');
+                        })
+                        .catch(e => {
+                            console.error('❌ Audio play failed:', e);
+                        });
+
+                    // Clean up the blob URL after audio finishes
+                    audio.addEventListener('ended', () => {
+                        URL.revokeObjectURL(audioUrl);
+                    });
+
+                } catch (error) {
+                    console.error('❌ Audio processing error:', error);
+                }
             }
 
             addMessage(sender, text) {
