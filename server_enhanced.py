@@ -311,6 +311,37 @@ class EnhancedVoiceHandler:
                         audio_data = await tts_response.read()
                         logger.info(f"🎵 Received audio data: {len(audio_data)} bytes")
 
+                        # If it's JSON, parse it to see the actual response
+                        if content_type == 'application/json':
+                            try:
+                                json_response = json.loads(audio_data.decode('utf-8'))
+                                logger.info(f"🎵 TTS JSON Response: {json_response}")
+
+                                # Check if audio data is in the JSON response
+                                if 'audio' in json_response:
+                                    # Audio is base64 encoded in JSON
+                                    audio_b64_from_api = json_response['audio']
+                                    audio_data = base64.b64decode(audio_b64_from_api)
+                                    content_type = 'audio/mpeg'  # Override content type
+                                    logger.info(f"🎵 Extracted audio from JSON: {len(audio_data)} bytes")
+                                elif 'data' in json_response:
+                                    # Alternative field name
+                                    audio_b64_from_api = json_response['data']
+                                    audio_data = base64.b64decode(audio_b64_from_api)
+                                    content_type = 'audio/mpeg'  # Override content type
+                                    logger.info(f"🎵 Extracted audio from JSON (data field): {len(audio_data)} bytes")
+                                else:
+                                    logger.error(f"❌ No audio data found in JSON response: {list(json_response.keys())}")
+                                    await websocket.send_json({"type": "error", "text": "TTS returned JSON without audio data"})
+                                    return
+                            except Exception as e:
+                                logger.error(f"❌ Failed to parse TTS JSON response: {e}")
+                                # Show first 200 chars of response for debugging
+                                response_preview = audio_data.decode('utf-8', errors='ignore')[:200]
+                                logger.error(f"❌ Response preview: {response_preview}")
+                                await websocket.send_json({"type": "error", "text": "TTS returned invalid JSON"})
+                                return
+
                         # Check if we got valid audio data
                         if audio_data and len(audio_data) > 100 and not session.get('interrupted', False):
                             # Check audio format by looking at header bytes
