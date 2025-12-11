@@ -113,18 +113,21 @@ class EnhancedVoiceHandler:
                 num_channels=1
             )
 
-            # Process through VAD
-            speech_detected = await self.detect_speech(audio_frame)
+            # Process through VAD - be more aggressive during assistant speaking
+            speech_detected = await self.detect_speech(audio_frame, session['assistant_speaking'])
 
             if speech_detected:
                 await self.handle_speech_detected(session_id, audio_bytes)
             else:
-                await self.handle_no_speech(session_id)
+                # Only handle "no speech" if user was previously speaking
+                # Don't reset during assistant speaking unless user was talking
+                if session['is_speaking']:
+                    await self.handle_no_speech(session_id)
 
         except Exception as e:
             logger.error(f"❌ Audio chunk processing error: {e}")
 
-    async def detect_speech(self, audio_frame: AudioRawFrame) -> bool:
+    async def detect_speech(self, audio_frame: AudioRawFrame, assistant_speaking: bool = False) -> bool:
         """Use VAD to detect speech in audio frame"""
         try:
             # Simple amplitude-based VAD as fallback if Silero fails
@@ -136,10 +139,20 @@ class EnhancedVoiceHandler:
             # Calculate volume/energy
             volume = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
 
-            # Threshold-based detection (you can adjust this)
-            speech_threshold = 1000  # Adjust based on your microphone
+            # Use more sensitive threshold during assistant speaking for interruption
+            if assistant_speaking:
+                speech_threshold = 800   # More sensitive for interruption
+                logger.debug(f"🎤 Interruption detection - Volume: {volume:.0f}, Threshold: {speech_threshold}")
+            else:
+                speech_threshold = 1000  # Normal threshold
+                logger.debug(f"🎤 Normal VAD - Volume: {volume:.0f}, Threshold: {speech_threshold}")
 
-            return volume > speech_threshold
+            speech_detected = volume > speech_threshold
+
+            if speech_detected and assistant_speaking:
+                logger.info(f"🛑 INTERRUPTION DETECTED! Volume: {volume:.0f}")
+
+            return speech_detected
 
         except Exception as e:
             logger.error(f"❌ VAD detection error: {e}")
@@ -372,8 +385,14 @@ class EnhancedVoiceHandler:
                         await websocket.send_json({"type": "error", "text": f"TTS API failed: {tts_response.status}"})
 
             # Mark assistant finished speaking
-            session['assistant_speaking'] = False
-            await websocket.send_json({"type": "processing_status", "status": "ready"})
+            if not session.get('interrupted', False):
+                session['assistant_speaking'] = False
+                await websocket.send_json({"type": "processing_status", "status": "ready"})
+            else:
+                # If interrupted, just reset the flag
+                session['assistant_speaking'] = False
+                session['interrupted'] = False
+                logger.info("🛑 Assistant finished after interruption")
 
         except Exception as e:
             logger.error(f"❌ Speech processing error: {e}")
