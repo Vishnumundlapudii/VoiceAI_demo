@@ -14,10 +14,11 @@ from pipecat.frames.frames import (
     Frame,
     AudioRawFrame,
     TranscriptionFrame,
-    ErrorFrame
+    ErrorFrame,
+    EndFrame
 )
 from pipecat.services.ai_services import STTService
-from pipecat.utils.audio import calculate_audio_volume
+from pipecat.processors.frame_processor import FrameDirection
 
 from loguru import logger
 
@@ -27,12 +28,14 @@ class WhisperHTTPService(STTService):
     Custom Whisper service that sends audio to HTTP endpoint
     """
 
-    def __init__(self, api_url: str, sample_rate: int = 16000):
+    def __init__(self, api_url: str, sample_rate: int = 16000, buffer_duration: float = 2.0):
         super().__init__()
         self._api_url = api_url
         self._sample_rate = sample_rate
         self._audio_buffer = bytearray()
         self._session = None
+        self._buffer_duration = buffer_duration  # seconds of audio to buffer
+        self._bytes_per_second = sample_rate * 2  # 16-bit audio = 2 bytes per sample
 
     async def start(self, frame: Frame) -> AsyncGenerator[Frame, None]:
         """Initialize the service"""
@@ -106,23 +109,34 @@ class WhisperHTTPService(STTService):
         # Add to buffer
         self._audio_buffer.extend(frame.audio)
 
-        # Process if we have enough audio (e.g., 1 second)
-        buffer_duration = len(self._audio_buffer) / (self._sample_rate * 2)  # 2 bytes per sample
+        # Process if we have enough audio
+        buffer_duration = len(self._audio_buffer) / self._bytes_per_second
 
-        if buffer_duration >= 1.0:
+        if buffer_duration >= self._buffer_duration:
             # Process the buffered audio
-            async for result_frame in self.run_stt(bytes(self._audio_buffer)):
+            audio_to_process = bytes(self._audio_buffer)
+            async for result_frame in self.run_stt(audio_to_process):
                 yield result_frame
 
             # Clear buffer
             self._audio_buffer.clear()
 
-    async def process_frame(self, frame: Frame) -> AsyncGenerator[Frame, None]:
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> AsyncGenerator[Frame, None]:
         """
-        Process incoming frames
+        Process incoming frames - Updated for Pipecat 0.0.36
         """
         if isinstance(frame, AudioRawFrame):
+            # Process audio frames
             async for result in self._process_audio_frame(frame):
                 yield result
+        elif isinstance(frame, EndFrame):
+            # Process any remaining audio in buffer when stream ends
+            if len(self._audio_buffer) > 0:
+                audio_to_process = bytes(self._audio_buffer)
+                async for result_frame in self.run_stt(audio_to_process):
+                    yield result_frame
+                self._audio_buffer.clear()
+            yield frame
         else:
+            # Pass through other frames
             yield frame

@@ -17,6 +17,7 @@ from pipecat.frames.frames import (
     ErrorFrame
 )
 from pipecat.services.ai_services import TTSService
+from pipecat.processors.frame_processor import FrameDirection
 
 from loguru import logger
 
@@ -104,9 +105,9 @@ class Speech5HTTPService(TTSService):
             logger.error(f"TTS error: {e}")
             yield ErrorFrame(f"TTS error: {str(e)}")
 
-    async def process_frame(self, frame: Frame) -> AsyncGenerator[Frame, None]:
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> AsyncGenerator[Frame, None]:
         """
-        Process incoming frames
+        Process incoming frames - Updated for Pipecat 0.0.36
         """
         if isinstance(frame, TextFrame):
             # Convert text to speech

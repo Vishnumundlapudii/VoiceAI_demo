@@ -27,6 +27,7 @@ from pipecat.vad.silero import SileroVADAnalyzer
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.services.ai_services import AIService
+from pipecat.processors.filters.function_filter import FunctionFilter
 
 from loguru import logger
 
@@ -49,26 +50,55 @@ class AssistantConfig:
 
 class ConversationManager(FrameProcessor):
     """
-    Manages conversation flow and context
+    Manages conversation flow and context with interruption handling
     """
 
     def __init__(self):
         super().__init__()
         self.messages = []
+        self.is_assistant_speaking = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """
-        Convert transcriptions to LLM messages
+        Convert transcriptions to LLM messages and manage conversation with interruption handling
         """
         if isinstance(frame, TranscriptionFrame):
+            # If assistant is speaking and user interrupts, handle it
+            if self.is_assistant_speaking:
+                logger.info(f"User interrupted: {frame.text}")
+                # Could add interruption logic here
+                self.is_assistant_speaking = False
+
             # Add user message to conversation
             user_message = {"role": "user", "content": frame.text}
             self.messages.append(user_message)
 
+            logger.info(f"User said: {frame.text}")
+
             # Create LLM messages frame
             await self.push_frame(
-                LLMMessagesFrame(messages=self.messages.copy())
+                LLMMessagesFrame(messages=self.messages.copy()),
+                direction
             )
+        elif isinstance(frame, TextFrame):
+            # This is an AI response - add to conversation history
+            assistant_message = {"role": "assistant", "content": frame.text}
+            self.messages.append(assistant_message)
+
+            logger.info(f"Assistant responded: {frame.text}")
+
+            # Mark that assistant is about to speak
+            self.is_assistant_speaking = True
+
+            # Pass the frame through
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, AudioRawFrame) and frame.num_channels > 0:
+            # Audio output from TTS means assistant is speaking
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, EndFrame):
+            # Assistant finished speaking
+            self.is_assistant_speaking = False
+            await self.push_frame(frame, direction)
         else:
             # Pass through other frames
             await self.push_frame(frame, direction)

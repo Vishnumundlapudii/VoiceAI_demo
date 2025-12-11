@@ -75,9 +75,9 @@ class LLaMAHTTPService(LLMService):
             logger.error(f"LLaMA error: {e}")
             yield ErrorFrame(f"LLM error: {str(e)}")
 
-    async def process_frame(self, frame: Frame) -> AsyncGenerator[Frame, None]:
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> AsyncGenerator[Frame, None]:
         """
-        Process incoming frames
+        Process incoming frames - Updated for Pipecat 0.0.36
         """
         if isinstance(frame, LLMMessagesFrame):
             # Process LLM messages

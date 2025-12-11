@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E2E Voice Assistant - Pipecat VAD</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+
+        .subtitle {
+            text-align: center;
+            opacity: 0.9;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+        }
+
+        .status {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .status.connected {
+            background: rgba(76, 175, 80, 0.3);
+        }
+
+        .status.disconnected {
+            background: rgba(244, 67, 54, 0.3);
+        }
+
+        .vad-status {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-size: 0.9em;
+        }
+
+        .vad-status.listening {
+            background: rgba(76, 175, 80, 0.3);
+            animation: pulse 1.5s infinite;
+        }
+
+        .vad-status.speaking {
+            background: rgba(255, 152, 0, 0.3);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.7; }
+            50% { opacity: 1; }
+            100% { opacity: 0.7; }
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin: 30px 0;
+        }
+
+        button {
+            background: white;
+            color: #667eea;
+            border: none;
+            border-radius: 50%;
+            width: 80px;
+            height: 80px;
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .volume-meter {
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+
+        .volume-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50, #ffeb3b, #ff9800, #f44336);
+            width: 0%;
+            transition: width 0.1s ease;
+        }
+
+        .transcript {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 150px;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 8px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .user-message {
+            background: rgba(102, 126, 234, 0.3);
+            text-align: right;
+        }
+
+        .assistant-message {
+            background: rgba(118, 75, 162, 0.3);
+            text-align: left;
+        }
+
+        .system-message {
+            background: rgba(96, 125, 139, 0.3);
+            text-align: center;
+            font-style: italic;
+            opacity: 0.8;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .tech-stack {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 0.8em;
+            opacity: 0.7;
+        }
+
+        .features {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .feature {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.7em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ E2E Voice Assistant</h1>
+        <p class="subtitle">Powered by Pipecat Framework with VAD</p>
+
+        <div id="status" class="status disconnected">
+            <span id="statusText">Disconnected</span>
+        </div>
+
+        <div id="vadStatus" class="vad-status">
+            <span id="vadText">VAD: Inactive</span>
+        </div>
+
+        <div class="controls">
+            <button id="connectBtn" title="Connect">
+                🔌
+            </button>
+        </div>
+
+        <div class="volume-meter">
+            <div id="volumeBar" class="volume-bar"></div>
+        </div>
+
+        <div class="transcript" id="transcript">
+            <div class="system-message">
+                Click Connect to start continuous voice interaction...
+            </div>
+        </div>
+
+        <div class="tech-stack">
+            <div>Whisper ASR → LLaMA 3.3 70B → Speech5 TTS</div>
+            <div class="features">
+                <div class="feature">🎯 VAD</div>
+                <div class="feature">🔄 Interruption</div>
+                <div class="feature">⚡ Pipeline</div>
+                <div class="feature">🎵 Continuous</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class PipecatVoiceAssistant {
+            constructor() {
+                this.ws = null;
+                this.mediaStream = null;
+                this.audioContext = null;
+                this.processor = null;
+                this.isConnected = false;
+                this.isStreaming = false;
+
+                this.connectBtn = document.getElementById('connectBtn');
+                this.statusEl = document.getElementById('status');
+                this.statusText = document.getElementById('statusText');
+                this.vadStatus = document.getElementById('vadStatus');
+                this.vadText = document.getElementById('vadText');
+                this.transcript = document.getElementById('transcript');
+                this.volumeBar = document.getElementById('volumeBar');
+
+                this.setupEventListeners();
+            }
+
+            setupEventListeners() {
+                this.connectBtn.addEventListener('click', () => this.toggleConnection());
+            }
+
+            async toggleConnection() {
+                if (this.isConnected) {
+                    this.disconnect();
+                } else {
+                    await this.connect();
+                }
+            }
+
+            async connect() {
+                try {
+                    // Get user media
+                    this.mediaStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            sampleRate: 16000,
+                            autoGainControl: true
+                        }
+                    });
+
+                    // Setup audio context
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000
+                    });
+
+                    // Connect to WebSocket
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws`;
+                    this.ws = new WebSocket(wsUrl);
+
+                    this.ws.onopen = () => {
+                        this.isConnected = true;
+                        this.updateStatus('Connected', true);
+                        this.connectBtn.innerHTML = '🔴';
+                        this.addMessage('System', 'Connected - VAD active, speak naturally');
+                        this.startContinuousAudio();
+                    };
+
+                    this.ws.onclose = () => {
+                        this.disconnect();
+                    };
+
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.addMessage('System', 'Connection error');
+                        this.disconnect();
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        this.handleMessage(event.data);
+                    };
+
+                } catch (error) {
+                    console.error('Failed to connect:', error);
+                    this.addMessage('System', 'Failed to access microphone');
+                }
+            }
+
+            disconnect() {
+                this.stopContinuousAudio();
+
+                if (this.ws) {
+                    this.ws.close();
+                    this.ws = null;
+                }
+
+                if (this.mediaStream) {
+                    this.mediaStream.getTracks().forEach(track => track.stop());
+                    this.mediaStream = null;
+                }
+
+                if (this.audioContext) {
+                    this.audioContext.close();
+                    this.audioContext = null;
+                }
+
+                this.isConnected = false;
+                this.updateStatus('Disconnected', false);
+                this.updateVADStatus('VAD: Inactive');
+                this.connectBtn.innerHTML = '🔌';
+                this.updateVolume(0);
+            }
+
+            startContinuousAudio() {
+                if (!this.isConnected || this.isStreaming) return;
+
+                this.isStreaming = true;
+                this.updateVADStatus('VAD: Listening...');
+
+                // Setup continuous audio processing
+                const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+                this.processor = this.audioContext.createScriptProcessor(1024, 1, 1);
+
+                source.connect(this.processor);
+                this.processor.connect(this.audioContext.destination);
+
+                this.processor.onaudioprocess = (e) => {
+                    if (!this.isStreaming || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+                    const inputData = e.inputBuffer.getChannelData(0);
+
+                    // Calculate volume for visualization
+                    let sum = 0;
+                    for (let i = 0; i < inputData.length; i++) {
+                        sum += Math.abs(inputData[i]);
+                    }
+                    const volume = sum / inputData.length;
+                    this.updateVolume(volume * 300);
+
+                    // Convert to 16-bit PCM and send to Pipecat
+                    const pcm16 = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        pcm16[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+                    }
+
+                    // Send raw audio to Pipecat WebSocket transport
+                    this.ws.send(pcm16.buffer);
+                };
+            }
+
+            stopContinuousAudio() {
+                this.isStreaming = false;
+
+                if (this.processor) {
+                    this.processor.disconnect();
+                    this.processor = null;
+                }
+
+                this.updateVolume(0);
+            }
+
+            handleMessage(data) {
+                try {
+                    // Handle both JSON messages and binary audio data
+                    if (typeof data === 'string') {
+                        const message = JSON.parse(data);
+                        this.handleJSONMessage(message);
+                    } else {
+                        // Handle binary audio response from Pipecat
+                        this.playAudioBuffer(data);
+                    }
+                } catch (error) {
+                    console.error('Failed to handle message:', error);
+                }
+            }
+
+            handleJSONMessage(message) {
+                switch (message.type) {
+                    case 'transcription':
+                        this.addMessage('You', message.text);
+                        this.updateVADStatus('VAD: Processing...');
+                        break;
+                    case 'response':
+                        this.addMessage('Assistant', message.text);
+                        break;
+                    case 'vad_started':
+                        this.updateVADStatus('VAD: Speaking detected');
+                        this.vadStatus.classList.add('speaking');
+                        break;
+                    case 'vad_stopped':
+                        this.updateVADStatus('VAD: Listening...');
+                        this.vadStatus.classList.remove('speaking');
+                        this.vadStatus.classList.add('listening');
+                        break;
+                    case 'error':
+                        this.addMessage('System', `Error: ${message.text}`);
+                        break;
+                }
+            }
+
+            playAudioBuffer(audioBuffer) {
+                // Play raw audio buffer from Pipecat
+                this.audioContext.decodeAudioData(audioBuffer.slice())
+                    .then(decodedData => {
+                        const source = this.audioContext.createBufferSource();
+                        source.buffer = decodedData;
+                        source.connect(this.audioContext.destination);
+                        source.start();
+                    })
+                    .catch(e => console.error('Audio decode error:', e));
+            }
+
+            addMessage(sender, text) {
+                const messageClass = sender === 'You' ? 'user-message' :
+                                   sender === 'Assistant' ? 'assistant-message' : 'system-message';
+
+                const messageHtml = `
+                    <div class="message ${messageClass}">
+                        <strong>${sender}:</strong> ${text}
+                    </div>
+                `;
+
+                this.transcript.innerHTML += messageHtml;
+                this.transcript.scrollTop = this.transcript.scrollHeight;
+            }
+
+            updateStatus(text, connected) {
+                this.statusText.textContent = text;
+                this.statusEl.className = `status ${connected ? 'connected' : 'disconnected'}`;
+            }
+
+            updateVADStatus(text) {
+                this.vadText.textContent = text;
+            }
+
+            updateVolume(level) {
+                this.volumeBar.style.width = `${Math.min(100, level)}%`;
+            }
+        }
+
+        // Initialize the assistant when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            new PipecatVoiceAssistant();
+        });
+    </script>
+</body>
+</html>
