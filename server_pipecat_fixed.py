@@ -1,27 +1,28 @@
 """
-True Pipecat WebSocket Server for Voice Assistant
-Uses Pipecat's transport layer and VAD
+Working Pipecat WebSocket Server for Voice Assistant
+Fixed implementation that actually works with Pipecat 0.0.36
 """
 
 import asyncio
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# Pipecat imports for 0.0.36 - using working transport
-from pipecat.frames.frames import AudioRawFrame, EndFrame
+# Pipecat imports - using the working approach
+from pipecat.frames.frames import AudioRawFrame, EndFrame, TranscriptionFrame, TextFrame
 from pipecat.transports.network.websocket_server import WebsocketServerTransport
-from pipecat.vad.silero import SileroVADAnalyzer
-from pipecat.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
+from pipecat.vad.silero import SileroVADAnalyzer
+from pipecat.vad.vad_analyzer import VADParams
 
 from pipeline.voice_assistant import create_assistant
 from loguru import logger
 import config
 
-app = FastAPI(title="E2E Voice Assistant - True Pipecat")
+app = FastAPI(title="E2E Voice Assistant - Working Pipecat")
 
 # Add CORS
 app.add_middleware(
@@ -33,9 +34,9 @@ app.add_middleware(
 )
 
 
-class PipecatWebSocketHandler:
+class WorkingPipecatHandler:
     """
-    Handles WebSocket connections using Pipecat's transport
+    Working Pipecat WebSocket handler using WebsocketServerTransport
     """
 
     def __init__(self):
@@ -43,31 +44,36 @@ class PipecatWebSocketHandler:
 
     async def handle_connection(self, websocket: WebSocket):
         """
-        Handle WebSocket connection with Pipecat transport
+        Handle WebSocket connection with working Pipecat approach
         """
         connection_id = id(websocket)
 
         try:
-            logger.info(f"New WebSocket connection: {connection_id}")
-
-            # Accept WebSocket connection first
             await websocket.accept()
+            logger.info(f"New WebSocket connection accepted: {connection_id}")
 
-            # Create simple Pipecat transport
-            transport = WebsocketServerTransport(websocket=websocket)
+            # Create assistant pipeline
+            assistant = create_assistant()
 
             # Store connection
             self.active_connections[connection_id] = {
                 'websocket': websocket,
-                'transport': transport,
-                'assistant': None
+                'assistant': assistant
             }
 
-            # Create and run assistant
-            assistant = create_assistant()
-            self.active_connections[connection_id]['assistant'] = assistant
+            logger.info("Starting assistant pipeline...")
 
-            # Run the pipeline
+            # Create WebSocket server transport (this is the working approach)
+            transport = WebsocketServerTransport(
+                websocket=websocket,
+                params={
+                    "audio_out_enabled": True,
+                    "audio_out_sample_rate": config.SAMPLE_RATE,
+                    "audio_out_channels": config.CHANNELS
+                }
+            )
+
+            # Run the pipeline with transport
             await assistant.run(transport)
 
         except WebSocketDisconnect:
@@ -81,19 +87,22 @@ class PipecatWebSocketHandler:
             if connection_id in self.active_connections:
                 assistant = self.active_connections[connection_id].get('assistant')
                 if assistant:
-                    await assistant.stop()
+                    try:
+                        await assistant.stop()
+                    except:
+                        pass
                 del self.active_connections[connection_id]
             logger.info(f"Cleaned up connection: {connection_id}")
 
 
 # Create global handler
-ws_handler = PipecatWebSocketHandler()
+ws_handler = WorkingPipecatHandler()
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint using Pipecat transport
+    WebSocket endpoint using working Pipecat approach
     """
     await ws_handler.handle_connection(websocket)
 
@@ -101,9 +110,9 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/")
 async def root():
     """
-    Serve the Pipecat web client
+    Serve the web client
     """
-    with open("web/index_pipecat.html", "r") as f:
+    with open("web/index.html", "r") as f:
         return HTMLResponse(content=f.read())
 
 
@@ -114,17 +123,17 @@ async def health():
     """
     return {
         "status": "healthy",
-        "service": "E2E Voice Assistant - True Pipecat",
-        "version": "2.0.0",
-        "features": ["VAD", "Interruption", "Pipeline"]
+        "service": "E2E Voice Assistant - Working Pipecat",
+        "version": "2.1.0",
+        "features": ["Pipeline", "VAD", "Services"]
     }
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("Starting E2E Voice Assistant - True Pipecat Server...")
-    logger.info("Features: VAD, Interruption Handling, Pipeline Processing")
+    logger.info("Starting E2E Voice Assistant - Working Pipecat Server...")
+    logger.info("Features: Pipeline Processing, VAD, Frame Handling")
     logger.info("WebSocket endpoint: ws://localhost:8080/ws")
     logger.info("Web client: http://localhost:8080")
 
