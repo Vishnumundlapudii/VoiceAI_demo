@@ -342,13 +342,19 @@
                         pcm16[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
                     }
 
-                    // Send audio data
-                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                        this.ws.send(JSON.stringify({
-                            type: 'audio',
-                            data: Array.from(pcm16)
-                        }));
-                    }
+                    // Convert to base64 for Pipecat compatibility
+                    const audioBlob = new Blob([pcm16.buffer], { type: 'audio/wav' });
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        const base64 = reader.result.split(',')[1]; // Remove data URL prefix
+                        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                            this.ws.send(JSON.stringify({
+                                type: 'audio',
+                                data: base64
+                            }));
+                        }
+                    };
+                    reader.readAsDataURL(audioBlob);
                 };
             }
 
@@ -384,7 +390,7 @@
                         case 'response':
                             this.addMessage('Assistant', message.text);
                             break;
-                        case 'audio':
+                        case 'audio_response':
                             this.playAudio(message.data);
                             break;
                         case 'error':
@@ -396,20 +402,14 @@
                 }
             }
 
-            playAudio(audioData) {
-                // Convert audio data and play
-                const audioArray = new Int16Array(audioData);
-                const audioBuffer = this.audioContext.createBuffer(1, audioArray.length, 16000);
-                const channelData = audioBuffer.getChannelData(0);
+            playAudio(base64Data) {
+                // Convert base64 to audio and play
+                const binaryString = atob(base64Data);
+                const audioBlob = new Blob([new Uint8Array([...binaryString].map(char => char.charCodeAt(0)))], {type: 'audio/wav'});
+                const audioUrl = URL.createObjectURL(audioBlob);
 
-                for (let i = 0; i < audioArray.length; i++) {
-                    channelData[i] = audioArray[i] / 32768;
-                }
-
-                const source = this.audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(this.audioContext.destination);
-                source.start();
+                const audio = new Audio(audioUrl);
+                audio.play().catch(e => console.error('Audio play error:', e));
             }
 
             addMessage(sender, text) {

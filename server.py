@@ -45,46 +45,22 @@ class WebSocketHandler:
 
     async def handle_connection(self, websocket: WebSocket):
         """
-        Handle a WebSocket connection
+        Handle a WebSocket connection - Direct API approach
         """
         await websocket.accept()
         logger.info("WebSocket connection established")
 
         try:
-            # Create assistant pipeline
-            self.assistant = create_assistant()
+            while True:
+                # Receive JSON message from client
+                data = await websocket.receive_json()
 
-            # Create WebSocket transport for Pipecat
-            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
-
-            # Create VAD analyzer
-            vad_analyzer = SileroVADAnalyzer(
-                params=VADParams(
-                    sample_rate=16000,
-                    num_channels=1,
-                    threshold=0.5
-                )
-            )
-
-            # Create params with ALL required fields
-            params = FastAPIWebsocketParams(
-                audio_out_enabled=True,
-                add_wav_header=False,
-                vad_enabled=True,
-                vad_analyzer=vad_analyzer,
-                vad_audio_passthrough=False,
-                serializer=ProtobufFrameSerializer(),
-                transcription_enabled=False,
-                interim_results_enabled=False
-            )
-
-            self.transport = FastAPIWebsocketTransport(
-                websocket=websocket,
-                params=params
-            )
-
-            # Run the pipeline with transport
-            await self.assistant.run(self.transport)
+                if data.get("type") == "audio":
+                    # Process the audio through our pipeline
+                    await self.process_audio(websocket, data["data"])
+                elif data.get("type") == "end_of_speech":
+                    # Handle end of speech if needed
+                    pass
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected")
@@ -92,9 +68,74 @@ class WebSocketHandler:
             logger.error(f"WebSocket error: {e}")
             import traceback
             logger.error(traceback.format_exc())
-        finally:
-            if self.assistant:
-                await self.assistant.stop()
+
+    async def process_audio(self, websocket: WebSocket, base64_audio: str):
+        """Process audio through our pipeline"""
+        try:
+            import base64
+            import aiohttp
+            from openai import AsyncOpenAI
+            import config
+
+            # Decode audio
+            audio_bytes = base64.b64decode(base64_audio)
+
+            # 1. Transcribe with Whisper
+            logger.info("Transcribing audio...")
+            async with aiohttp.ClientSession() as session:
+                data = aiohttp.FormData()
+                data.add_field('file', audio_bytes, filename='audio.wav', content_type='audio/wav')
+
+                async with session.post(config.WHISPER_API, data=data) as response:
+                    result = await response.json()
+                    text = result.get('text', '').strip()
+
+            if not text:
+                return
+
+            logger.info(f"Transcribed: {text}")
+            await websocket.send_json({"type": "transcription", "text": text})
+
+            # 2. Generate response with LLaMA
+            logger.info("Generating response...")
+            client = AsyncOpenAI(
+                api_key=config.E2E_TOKEN,
+                base_url=config.LLAMA_BASE_URL
+            )
+
+            response = await client.chat.completions.create(
+                model=config.LLAMA_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant. Keep responses concise."},
+                    {"role": "user", "content": text}
+                ],
+                max_tokens=100
+            )
+
+            response_text = response.choices[0].message.content
+            logger.info(f"Response: {response_text}")
+            await websocket.send_json({"type": "response", "text": response_text})
+
+            # 3. Convert to speech with TTS
+            logger.info("Converting to speech...")
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "model": "tts-1",
+                    "input": response_text,
+                    "voice": "nova"
+                }
+
+                async with session.post(config.TTS_API, json=payload) as tts_response:
+                    audio_data = await tts_response.read()
+
+                    if audio_data:
+                        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+                        await websocket.send_json({"type": "audio_response", "data": audio_b64})
+                        logger.info("Sent audio response")
+
+        except Exception as e:
+            logger.error(f"Audio processing error: {e}")
+            await websocket.send_json({"type": "error", "text": str(e)})
 
 
 # Create global handler
