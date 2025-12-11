@@ -299,6 +299,7 @@
                 this.vadMode = true;  // Default to VAD mode
                 this.isTalking = false;
                 this.audioChunks = [];
+                this.currentAudio = null;  // Track current playing audio
 
                 this.connectBtn = document.getElementById('connectBtn');
                 this.talkBtn = document.getElementById('talkBtn');
@@ -594,7 +595,10 @@
                             this.playAudio(message.data, message.content_type, message.size);
                             break;
                         case 'interruption':
-                            this.addMessage('System', '🛑 Interrupted assistant');
+                            this.addMessage('System', message.message);
+                            break;
+                        case 'stop_audio':
+                            this.stopCurrentAudio();
                             break;
                         case 'error':
                             this.addMessage('System', `❌ Error: ${message.text}`);
@@ -644,6 +648,9 @@
                     audio.volume = 0.9;
                     audio.preload = 'metadata';
 
+                    // Track current audio for interruption
+                    this.currentAudio = audio;
+
                     console.log('🎵 Audio element created, setting up listeners...');
 
                     let hasStartedPlaying = false;
@@ -683,6 +690,7 @@
 
                     audio.addEventListener('ended', () => {
                         console.log('🎵 Audio playback ended');
+                        this.currentAudio = null;  // Clear current audio reference
                         cleanup();
                     });
 
@@ -778,6 +786,20 @@
                 } catch (error) {
                     console.error('❌ Web Audio API failed:', error);
                     this.addMessage('System', '❌ All audio playback methods failed');
+                }
+            }
+
+            stopCurrentAudio() {
+                console.log('🛑 Stopping current audio due to interruption');
+
+                if (this.currentAudio) {
+                    this.currentAudio.pause();
+                    this.currentAudio.currentTime = 0;
+                    this.currentAudio = null;
+                    console.log('🛑 Audio stopped and cleared');
+                    this.addMessage('System', '🛑 Audio playback stopped');
+                } else {
+                    console.log('🛑 No current audio to stop');
                 }
             }
 

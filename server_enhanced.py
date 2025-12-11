@@ -159,14 +159,20 @@ class EnhancedVoiceHandler:
             session['is_speaking'] = True
             session['audio_buffer'] = bytearray()
             session['last_speech_time'] = time.time()
+            session['interrupted'] = False  # Reset interruption flag
 
             # Stop assistant if it's speaking (INTERRUPTION)
             if session['assistant_speaking']:
                 logger.info("🛑 INTERRUPTION: User interrupted assistant")
                 session['assistant_speaking'] = False
+                session['interrupted'] = True  # Set interruption flag
                 await websocket.send_json({
                     "type": "interruption",
-                    "message": "Interrupted assistant"
+                    "message": "🛑 Assistant interrupted - listening to you"
+                })
+                await websocket.send_json({
+                    "type": "stop_audio",
+                    "message": "Stop current audio playback"
                 })
 
             await websocket.send_json({
@@ -292,9 +298,10 @@ class EnhancedVoiceHandler:
             # 3. Convert to speech with TTS (your working approach)
             async with aiohttp.ClientSession() as aio_session:
                 payload = {
-                    "model": "tts-1",
+                    "model": "tts-1-hd",  # Use HD model for better quality
                     "input": response_text,
-                    "voice": "nova"
+                    "voice": "alloy",     # Try different voice (alloy is clearer than nova)
+                    "speed": 1.0          # Adjust speed if needed
                 }
 
                 headers = {
