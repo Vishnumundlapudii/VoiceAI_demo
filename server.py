@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-# Pipecat imports for 0.0.20
+# Pipecat imports for 0.0.36
 from pipecat.frames.frames import AudioRawFrame, EndFrame
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.network.websocket_server import WebsocketServerTransport, WebsocketServerParams
