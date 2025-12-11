@@ -77,6 +77,11 @@ class WebSocketHandler:
             from openai import AsyncOpenAI
             import config
 
+            # Check WebSocket state before processing
+            if websocket.client_state.value != 1:  # 1 = CONNECTED
+                logger.warning("WebSocket not connected, skipping audio processing")
+                return
+
             # Decode audio
             audio_bytes = base64.b64decode(base64_audio)
 
@@ -95,14 +100,17 @@ class WebSocketHandler:
                     else:
                         error_text = await response.text()
                         logger.error(f"Whisper API error {response.status}: {error_text}")
-                        await websocket.send_json({"type": "error", "text": f"Whisper API error: {response.status}"})
+                        if websocket.client_state.value == 1:
+                            await websocket.send_json({"type": "error", "text": f"Whisper API error: {response.status}"})
                         return
 
             if not text:
                 return
 
             logger.info(f"Transcribed: {text}")
-            await websocket.send_json({"type": "transcription", "text": text})
+            # Check connection before sending
+            if websocket.client_state.value == 1:
+                await websocket.send_json({"type": "transcription", "text": text})
 
             # 2. Generate response with LLaMA
             logger.info("Generating response...")
@@ -122,7 +130,10 @@ class WebSocketHandler:
 
             response_text = response.choices[0].message.content
             logger.info(f"Response: {response_text}")
-            await websocket.send_json({"type": "response", "text": response_text})
+
+            # Check connection before sending
+            if websocket.client_state.value == 1:
+                await websocket.send_json({"type": "response", "text": response_text})
 
             # 3. Convert to speech with TTS
             logger.info("Converting to speech...")
@@ -136,14 +147,18 @@ class WebSocketHandler:
                 async with session.post(config.TTS_API, json=payload) as tts_response:
                     audio_data = await tts_response.read()
 
-                    if audio_data:
+                    if audio_data and websocket.client_state.value == 1:
                         audio_b64 = base64.b64encode(audio_data).decode('utf-8')
                         await websocket.send_json({"type": "audio_response", "data": audio_b64})
                         logger.info("Sent audio response")
 
         except Exception as e:
             logger.error(f"Audio processing error: {e}")
-            await websocket.send_json({"type": "error", "text": str(e)})
+            if websocket.client_state.value == 1:
+                try:
+                    await websocket.send_json({"type": "error", "text": str(e)})
+                except:
+                    logger.error("Failed to send error message - WebSocket closed")
 
 
 # Create global handler
