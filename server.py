@@ -53,7 +53,7 @@ class WebSocketHandler:
 
             # Create WebSocket transport for Pipecat
             self.transport = WebsocketServerTransport(
-                websocket=websocket,
+                ws=websocket,
                 params=WebsocketServerParams(
                     audio_in_enabled=True,
                     audio_out_enabled=True,
