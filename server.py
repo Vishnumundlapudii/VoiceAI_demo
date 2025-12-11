@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Pipecat imports for 0.0.36
 from pipecat.frames.frames import AudioRawFrame, EndFrame
 from pipecat.transports.base_transport import BaseTransport
-from pipecat.transports.network.websocket_server import WebsocketServerTransport, WebsocketServerParams
+from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
 
 from pipeline.voice_assistant import create_assistant
 from loguru import logger
@@ -52,14 +52,12 @@ class WebSocketHandler:
             self.assistant = create_assistant()
 
             # Create WebSocket transport for Pipecat
-            self.transport = WebsocketServerTransport(
-                ws=websocket,
-                params=WebsocketServerParams(
-                    audio_in_enabled=True,
-                    audio_out_enabled=True,
-                    transcription_enabled=True,
-                    vad_enabled=True
-                )
+            # For Pipecat 0.0.36, WebsocketServerTransport expects different initialization
+            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
+
+            self.transport = FastAPIWebsocketTransport(
+                websocket=websocket,
+                logger=logger
             )
 
             # Run the pipeline with transport
