@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pipecat.frames.frames import AudioRawFrame, EndFrame
 from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
+from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 from pipeline.voice_assistant import create_assistant
 from loguru import logger
@@ -61,7 +62,7 @@ class WebSocketHandler:
                 vad_enabled=False,
                 vad_analyzer=None,
                 vad_audio_passthrough=False,
-                serializer=None,
+                serializer=ProtobufFrameSerializer(),
                 transcription_enabled=False,
                 interim_results_enabled=False
             )
