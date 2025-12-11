@@ -202,6 +202,7 @@
                 this.processor = null;
                 this.isConnected = false;
                 this.isTalking = false;
+                this.audioChunks = [];
 
                 this.connectBtn = document.getElementById('connectBtn');
                 this.talkBtn = document.getElementById('talkBtn');
@@ -315,6 +316,7 @@
 
                 this.isTalking = true;
                 this.talkBtn.classList.add('active');
+                this.audioChunks = []; // Reset audio chunks
 
                 // Setup audio processing
                 const source = this.audioContext.createMediaStreamSource(this.mediaStream);
@@ -336,22 +338,12 @@
                     const volume = sum / inputData.length;
                     this.updateVolume(volume * 500);
 
-                    // Convert to 16-bit PCM
+                    // Convert to 16-bit PCM and accumulate
                     const pcm16 = new Int16Array(inputData.length);
                     for (let i = 0; i < inputData.length; i++) {
                         pcm16[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
                     }
-
-                    // Create proper WAV file
-                    const wavBuffer = this.createWavFile(pcm16, 16000);
-                    const base64 = btoa(String.fromCharCode(...new Uint8Array(wavBuffer)));
-
-                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                        this.ws.send(JSON.stringify({
-                            type: 'audio',
-                            data: base64
-                        }));
-                    }
+                    this.audioChunks.push(pcm16);
                 };
             }
 
@@ -368,11 +360,27 @@
 
                 this.updateVolume(0);
 
-                // Send end of speech signal
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({
-                        type: 'end_of_speech'
-                    }));
+                // Combine all audio chunks and send as one file
+                if (this.audioChunks.length > 0) {
+                    const totalLength = this.audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+                    const combinedAudio = new Int16Array(totalLength);
+                    let offset = 0;
+
+                    for (const chunk of this.audioChunks) {
+                        combinedAudio.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+
+                    // Create WAV file from combined audio
+                    const wavBuffer = this.createWavFile(combinedAudio, 16000);
+                    const base64 = btoa(String.fromCharCode(...new Uint8Array(wavBuffer)));
+
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({
+                            type: 'audio',
+                            data: base64
+                        }));
+                    }
                 }
             }
 
