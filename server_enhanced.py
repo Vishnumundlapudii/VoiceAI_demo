@@ -329,7 +329,7 @@ class EnhancedVoiceHandler:
             # 3. Convert to speech with Glow-TTS (high quality local server)
             async with aiohttp.ClientSession() as aio_session:
                 # Use Glow-TTS server for better quality
-                glow_tts_url = "http://216.48.191.105:8001/v1/audio/speech"
+                glow_tts_url = "http://216.48.191.105:8000/v1/audio/speech"
                 payload = {
                     "input": response_text
                 }
