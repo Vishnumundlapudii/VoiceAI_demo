@@ -180,10 +180,10 @@ class EnhancedVoiceHandler:
                 speech_ratio_threshold = 0.4  # Higher threshold
                 logger.debug(f"🎤 Interruption Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
             else:
-                # VERY CONSERVATIVE - only detect clear speech
-                energy_threshold = 0.030  # Much higher - your background noise is ~0.005-0.010
-                zcr_min, zcr_max = 0.15, 0.35  # Very tight range - exclude your 0.03-0.08 noise
-                speech_ratio_threshold = 0.7  # Much higher - your noise hits 0.5-0.6
+                # EXTREMELY STRICT - only very loud clear speech
+                energy_threshold = 0.100  # Very high - your speech peaks at ~0.07
+                zcr_min, zcr_max = 0.20, 0.30  # Extremely tight range
+                speech_ratio_threshold = 0.8  # Very high
                 logger.debug(f"🎤 Normal Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
 
             # Combine multiple indicators
