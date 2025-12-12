@@ -1,830 +1,340 @@
-"""
-Enhanced Voice Assistant Server
-Adds VAD, Interruption Handling, and Audio Buffering to working direct API approach
-"""
-
 import asyncio
-import json
 import base64
-import time
-from typing import Dict, Optional
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-
-import aiohttp
-from openai import AsyncOpenAI
 import io
-import wave
+import logging
+from typing import Optional, List
 
-# VAD imports (only what we need)
-from pipecat.vad.silero import SileroVADAnalyzer
-from pipecat.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import AudioRawFrame
+import numpy as np
+import torch
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from pydub import AudioSegment
+from TTS.api import TTS
 
-from loguru import logger
-import config_clean as config
+# ---------------------------------------------------------------------
+# Basic config
+# ---------------------------------------------------------------------
 
-app = FastAPI(title="E2E Voice Assistant - Enhanced")
+SAMPLE_RATE = 16000          # 🔴 Change this if your frontend uses a different rate
+MIN_TRANSCRIPT_CHARS = 3     # below this, ignore as noise/silence
+SILENCE_ENERGY_THRESHOLD = 500  # tweak if needed
+MAX_SILENCE_SECONDS = 15     # optional: reset conversation after long silence
 
-# Add CORS
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("voice-backend")
+
+app = FastAPI(title="Voice Assistant Backend")
+
+# CORS – update allowed origins as needed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # you can restrict this
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------
+# TTS Initialization (Glow-TTS)
+# ---------------------------------------------------------------------
 
-class EnhancedVoiceHandler:
+device = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info(f"🚀 Loading Glow-TTS on {device}")
+tts = TTS("tts_models/en/ljspeech/glow-tts").to(device)
+logger.info("✅ Glow-TTS ready!")
+
+# ---------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------
+
+class TTSRequest(BaseModel):
+    text: str
+
+class TTSSpeechResponse(BaseModel):
+    audio_base64: str
+    format: str = "mp3"
+
+class ChatTextRequest(BaseModel):
+    text: str
+    history: Optional[List[dict]] = None  # [{"role": "user"/"assistant", "content": "..."}, ...]
+
+class ChatResponse(BaseModel):
+    reply: str
+
+# ---------------------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------------------
+
+def is_silent_pcm16(audio_bytes: bytes, sample_rate: int) -> bool:
     """
-    Enhanced handler with VAD, interruption, and buffering
+    Very simple silence detector based on average absolute amplitude.
     """
-
-    def __init__(self):
-        # VAD setup with unified config
-        self.vad = SileroVADAnalyzer(
-            params=VADParams(
-                confidence_threshold=0.7,  # Keep this for Silero, main VAD uses energy
-                silence_duration_ms=int(config.END_OF_SPEECH_THRESHOLD * 1000),
-            )
-        )
-
-        # Session management
-        self.active_sessions: Dict[str, dict] = {}
-
-        # Warmup tracking
-        self.models_warmed_up = False
-        self.warmup_in_progress = False
-
-        logger.info(
-            "✅ Enhanced Voice Handler initialized with UNIFIED CONFIG + Simple VAD"
-        )
-
-    async def handle_connection(self, websocket: WebSocket):
-        """Handle enhanced WebSocket connection"""
-        session_id = id(websocket)
-
-        try:
-            await websocket.accept()
-            logger.info(f"✅ Enhanced WebSocket connected: {session_id}")
-
-            # Initialize session
-            self.active_sessions[session_id] = {
-                "websocket": websocket,
-                "audio_buffer": bytearray(),
-                "is_speaking": False,
-                "assistant_speaking": False,
-                "last_speech_time": None,
-                "conversation_context": [],
-            }
-
-            await websocket.send_json(
-                {
-                    "type": "connection_status",
-                    "status": "connected",
-                    "features": ["VAD", "Interruption", "Enhanced Audio"],
-                    "message": "🎤 VAD active - speak naturally!",
-                }
-            )
-
-            # Main message loop
-            while True:
-                data = await websocket.receive_json()
-
-                if data.get("type") == "audio_chunk":
-                    await self.process_audio_chunk(session_id, data["data"])
-                elif data.get("type") == "audio":  # Legacy push-to-talk support
-                    await self.process_legacy_audio(session_id, data["data"])
-
-        except WebSocketDisconnect:
-            logger.info(f"❌ Enhanced WebSocket disconnected: {session_id}")
-        except Exception as e:
-            logger.error(f"❌ Enhanced WebSocket error {session_id}: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
-        finally:
-            # Cleanup session
-            if session_id in self.active_sessions:
-                del self.active_sessions[session_id]
-
-    async def process_audio_chunk(self, session_id: str, base64_audio: str):
-        """Process continuous audio chunks with VAD"""
-        session = self.active_sessions.get(session_id)
-        if not session:
-            return
-
-        try:
-            # Decode audio
-            audio_bytes = base64.b64decode(base64_audio)
-            websocket = session["websocket"]
-
-            # Create AudioRawFrame for VAD
-            audio_frame = AudioRawFrame(
-                audio=audio_bytes,
-                sample_rate=config.SAMPLE_RATE,
-                num_channels=1,
-            )
-
-            # Process through VAD - be more aggressive during assistant speaking
-            speech_detected = await self.detect_speech(
-                audio_frame, session["assistant_speaking"]
-            )
-
-            if speech_detected:
-                await self.handle_speech_detected(session_id, audio_bytes)
-            else:
-                # Only handle "no speech" if user was previously speaking
-                # Don't reset during assistant speaking unless user was talking
-                if session["is_speaking"]:
-                    await self.handle_no_speech(session_id)
-
-        except Exception as e:
-            logger.error(f"❌ Audio chunk processing error: {e}")
-
-    async def detect_speech(
-        self, audio_frame: AudioRawFrame, assistant_speaking: bool = False
-    ) -> bool:
-        """Simple RMS-based VAD for robust speech detection."""
-        try:
-            import numpy as np
-
-            # Convert bytes to numpy array
-            audio_np = np.frombuffer(audio_frame.audio, dtype=np.int16)
-            if len(audio_np) == 0:
-                return False
-
-            # RMS volume (plays nicely with speech levels)
-            volume = float(
-                np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
-            )
-
-            # Threshold from config; fallback to a sane default
-            threshold = getattr(config, "VAD_ENERGY_THRESHOLD", 600.0)
-
-            speech_detected = volume > threshold
-
-            if speech_detected:
-                logger.debug(
-                    f"✅ Speech detected - volume={volume:.1f} > threshold={threshold}"
-                )
-
-            if assistant_speaking and speech_detected:
-                logger.info(
-                    "🛑 INTERRUPTION DETECTED (user speaking over assistant)"
-                )
-
-            return speech_detected
-
-        except Exception as e:
-            logger.error(f"❌ Enhanced VAD detection error: {e}")
-            return False
-
-    async def handle_speech_detected(self, session_id: str, audio_bytes: bytes):
-        """Handle when speech is detected"""
-        session = self.active_sessions.get(session_id)
-        if not session:
-            return
-
-        websocket = session["websocket"]
-
-        if not session["is_speaking"]:
-            # Speech started
-            logger.info("🗣️ VAD: Speech started")
-            session["is_speaking"] = True
-            session["audio_buffer"] = bytearray()
-            current_time = time.time()
-            session["last_speech_time"] = current_time
-            session["speech_start_time"] = current_time  # Track when speech began
-            session["interrupted"] = False  # Reset interruption flag
-
-            # Enhanced interruption handling
-            if session["assistant_speaking"]:
-                logger.info("🛑 FAST INTERRUPTION: User interrupted assistant")
-                session["assistant_speaking"] = False
-                session["interrupted"] = True
-                session["interruption_time"] = time.time()
-
-                # Send immediate stop signal with priority
-                await websocket.send_json(
-                    {
-                        "type": "stop_audio",
-                        "priority": "immediate",
-                        "timestamp": time.time(),
-                        "message": "Audio stopped immediately",
-                    }
-                )
-
-                # Send interruption confirmation
-                await websocket.send_json(
-                    {
-                        "type": "interruption",
-                        "response_time_ms": 0,  # Immediate
-                        "message": "⚡ Quick interruption - I'm listening",
-                    }
-                )
-
-                # Set status to ready for user input
-                await websocket.send_json(
-                    {
-                        "type": "processing_status",
-                        "status": "ready",
-                        "message": "Ready for your input",
-                    }
-                )
-
-            await websocket.send_json(
-                {
-                    "type": "vad_status",
-                    "status": "speaking",
-                    "message": "👂 Listening...",
-                }
-            )
-
-        # Add to buffer with debugging
-        session["audio_buffer"].extend(audio_bytes)
-        session["last_speech_time"] = time.time()
-
-        # DEBUG: Log buffer size occasionally
-        buffer_size = len(session["audio_buffer"])
-        if buffer_size % 10000 == 0:  # Every 10KB
-            logger.debug(
-                f"📊 Audio buffer: {buffer_size} bytes ({buffer_size / (config.SAMPLE_RATE * 2):.1f}s)"
-            )
-
-    async def handle_no_speech(self, session_id: str):
-        """Handle when no speech is detected with improved timing"""
-        session = self.active_sessions.get(session_id)
-        if not session or not session["is_speaking"]:
-            return
-
-        # Check if enough silence has passed
-        current_time = time.time()
-        silence_duration = current_time - session["last_speech_time"]
-
-        # Get speech start time for total duration check
-        speech_start_time = session.get("speech_start_time", current_time)
-        total_speech_duration = current_time - speech_start_time
-
-        # BALANCED: Good accuracy with reasonable speed
-        if total_speech_duration > 4.0:
-            # Long speeches - be a bit more patient
-            required_silence = config.END_OF_SPEECH_THRESHOLD * 1.3  # ~2.0s
-        else:
-            # Normal speeches - balanced timing
-            required_silence = config.END_OF_SPEECH_THRESHOLD  # 1.5s
-            logger.info(
-                f"⚖️ BALANCED MODE: Using {required_silence}s for complete speech"
-            )
-
-        # Also check for absolute timeout to prevent infinite recording
-        if (
-            silence_duration >= required_silence
-            or total_speech_duration > config.SPEECH_TIMEOUT_THRESHOLD
-        ):
-            # Speech ended - process the audio
-            if total_speech_duration > config.SPEECH_TIMEOUT_THRESHOLD:
-                logger.info(
-                    f"⏱️ VAD: Speech timeout after {total_speech_duration:.1f}s, processing..."
-                )
-            else:
-                logger.info(
-                    f"✅ VAD: Speech ended after {silence_duration:.1f}s silence, processing..."
-                )
-
-            session["is_speaking"] = False
-
-            if len(session["audio_buffer"]) > 0:
-                await self.process_complete_speech(
-                    session_id, bytes(session["audio_buffer"])
-                )
-                session["audio_buffer"] = bytearray()
-
-            await session["websocket"].send_json(
-                {
-                    "type": "vad_status",
-                    "status": "listening",
-                    "message": "🎤 Ready for next input",
-                }
-            )
-
-    async def process_complete_speech(self, session_id: str, speech_audio: bytes):
-        """Process complete speech using your working direct API approach"""
-        session = self.active_sessions.get(session_id)
-        if not session:
-            return
-        websocket = session[
-            "websocket"
-        ]  # Access websocket early for all branches
-
-        # Enhanced session state checking with REQUEST ID
-        request_id = int(time.time() * 1000)  # Unique request ID
-        logger.info(f"🆔 REQUEST {request_id}: Starting speech processing")
-
-        if session.get("interrupted", False):
-            logger.info(
-                f"🛑 REQUEST {request_id}: Skipping - assistant was interrupted"
-            )
-            session["interrupted"] = False  # Reset flag
-            return
-
-        # SMART: Allow interruptions, prevent duplicate processing
-        if session.get("processing", False):
-            current_processing_id = session.get("processing_id", "unknown")
-
-            # SPECIAL CASE: Allow interruption during assistant speaking
-            if session.get("assistant_speaking", False):
-                logger.info(
-                    f"🚨 REQUEST {request_id}: INTERRUPTION detected during assistant speaking!"
-                )
-                # Cancel current processing and allow this interruption
-                session["processing"] = False
-                session["processing_id"] = None
-                session["assistant_speaking"] = False
-                session["interrupted"] = True
-
-                # Send immediate stop
-                await websocket.send_json(
-                    {
-                        "type": "stop_audio",
-                        "priority": "immediate",
-                        "reason": "user_interruption",
-                    }
-                )
-
-                # Continue and process new speech
-            else:
-                # Normal case: Block duplicate requests when not speaking
-                logger.info(
-                    f"🛑 REQUEST {request_id}: Skipping - already processing request {current_processing_id}"
-                )
-                return
-
-        session["processing"] = True  # Set processing flag
-        session["processing_id"] = request_id  # Track which request is processing
-
-        # PERFORMANCE TRACKING: Start timing
-        process_start_time = time.time()
-        logger.info(
-            f"🕐 REQUEST {request_id}: STARTED processing at {process_start_time}"
-        )
-
-        try:
-            logger.info(
-                f"🎯 REQUEST {request_id}: Processing {len(speech_audio)} bytes of speech"
-            )
-
-            # HANDLE SHORT PHRASES: Very minimal validation for short questions
-            min_audio_samples = int(config.SAMPLE_RATE * 0.05)  # 0.05 second
-            if len(speech_audio) < min_audio_samples * 2:  # 2 bytes per sample
-                logger.warning(
-                    f"⚠️ REQUEST {request_id}: Audio extremely short: {len(speech_audio)} bytes, skipping"
-                )
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": "Please speak a bit louder or longer",
-                    }
-                )
-                return
-
-            # Log audio details for debugging short phrases
-            audio_duration = len(speech_audio) / (config.SAMPLE_RATE * 2)
-            logger.info(
-                f"📏 REQUEST {request_id}: Audio duration: {audio_duration:.3f} seconds"
-            )
-
-            if audio_duration < 0.5:
-                logger.info(
-                    f"📢 REQUEST {request_id}: SHORT PHRASE detected - processing with extra care"
-                )
-
-            # Convert raw audio to proper WAV format for Whisper
-            wav_buffer = io.BytesIO()
-            with wave.open(wav_buffer, "wb") as wav_file:
-                wav_file.setnchannels(1)  # Mono
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(config.SAMPLE_RATE)  # 16kHz
-                wav_file.writeframes(speech_audio)
-
-            wav_data = wav_buffer.getvalue()
-            logger.info(
-                f"🎵 Converted to WAV: {len(wav_data)} bytes (was {len(speech_audio)} raw bytes)"
-            )
-            logger.info(
-                f"🎵 Audio duration: {len(speech_audio) / (config.SAMPLE_RATE * 2):.2f} seconds"
-            )
-
-            # TIMING: Audio processing complete
-            audio_process_time = time.time()
-            logger.info(
-                f"⏱️ Audio processing took: {(audio_process_time - process_start_time):.2f}s"
-            )
-
-            await websocket.send_json(
-                {"type": "processing_status", "status": "transcribing"}
-            )
-
-            # 1. Transcribe with Whisper - reasonable timeout
-            timeout = aiohttp.ClientTimeout(total=8)
-            async with aiohttp.ClientSession(timeout=timeout) as aio_session:
-                data = aiohttp.FormData()
-                data.add_field(
-                    "audio",
-                    wav_data,
-                    filename="recording.wav",
-                    content_type="audio/wav",
-                )
-
-                logger.info(f"🚀 Sending to Whisper: {config.WHISPER_API}")
-                logger.info(
-                    f"📦 Audio size: {len(wav_data)} bytes, duration: {len(speech_audio) / (config.SAMPLE_RATE * 2):.2f}s"
-                )
-
-                async with aio_session.post(
-                    config.WHISPER_API, data=data
-                ) as response:
-                    logger.info(
-                        f"📡 Whisper response status: {response.status}"
-                    )
-                    if response.status == 200:
-                        result = await response.json()
-                        text = result.get("text", "").strip()
-                        logger.info(f"📝 Whisper Success: '{text}'")
-                        logger.info(f"📝 Full Whisper response: {result}")
-
-                        if not text:
-                            logger.warning("⚠️ Whisper returned empty text")
-                            text = "[No speech detected]"
-
-                        logger.info(
-                            f"✅ REQUEST {request_id}: TRANSCRIPTION RESULT: '{text}'"
-                        )
-
-                        # TIMING: Whisper complete
-                        whisper_complete_time = time.time()
-                        logger.info(
-                            f"⏱️ REQUEST {request_id}: Whisper took: {(whisper_complete_time - audio_process_time):.2f}s"
-                        )
-                    else:
-                        error_text = await response.text()
-                        logger.error(
-                            f"❌ Whisper API error {response.status}: {error_text}"
-                        )
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "text": f"Whisper API failed: {response.status}",
-                            }
-                        )
-                        return
-
-            if not text:
-                return
-
-            await websocket.send_json({"type": "transcription", "text": text})
-            await websocket.send_json(
-                {"type": "processing_status", "status": "thinking"}
-            )
-
-            # 2. Generate response with LLaMA
-            client = AsyncOpenAI(
-                api_key=config.E2E_TOKEN, base_url=config.LLAMA_BASE_URL
-            )
-
-            # Add to conversation context
-            session["conversation_context"].append(
-                {"role": "user", "content": text}
-            )
-            logger.info(
-                f"🧠 SESSION {session_id}: Added user message. Context length: {len(session['conversation_context'])}"
-            )
-            logger.info(
-                f"🧠 SESSION {session_id}: User said: '{text[:50]}{'...' if len(text) > 50 else ''}')"
-            )
-
-            system_prompt = config.SYSTEM_PROMPT
-
-            response = await client.chat.completions.create(
-                model=config.LLAMA_MODEL,
-                messages=[{"role": "system", "content": system_prompt}]
-                + session["conversation_context"][
-                    -config.CONVERSATION_CONTEXT_LENGTH :
-                ],
-                max_tokens=config.LLM_MAX_TOKENS,
-                temperature=config.LLM_TEMPERATURE,
-                top_p=config.LLM_TOP_P,
-                presence_penalty=config.LLM_PRESENCE_PENALTY,
-                frequency_penalty=config.LLM_FREQUENCY_PENALTY,
-            )
-
-            response_text = response.choices[0].message.content
-            logger.info(f"💬 Response: {response_text}")
-
-            # TIMING: LLM complete
-            llm_complete_time = time.time()
-            logger.info(
-                f"⏱️ LLM took: {(llm_complete_time - whisper_complete_time):.2f}s"
-            )
-
-            # Add to conversation context
-            session["conversation_context"].append(
-                {"role": "assistant", "content": response_text}
-            )
-            logger.info(
-                f"🧠 SESSION {session_id}: Added assistant response. Context length: {len(session['conversation_context'])}"
-            )
-            logger.info(
-                f"🧠 SESSION {session_id}: Assistant said: '{response_text[:50]}{'...' if len(response_text) > 50 else ''}')"
-            )
-
-            await websocket.send_json(
-                {"type": "response", "text": response_text}
-            )
-            await websocket.send_json(
-                {"type": "processing_status", "status": "speaking"}
-            )
-
-            # Mark assistant as speaking (for interruption detection)
-            session["assistant_speaking"] = True
-
-            # 3. Convert to speech with Glow-TTS (TTS_API in config)
-            async with aiohttp.ClientSession() as aio_session:
-                glow_tts_url = config.TTS_API
-                payload = {"input": response_text}
-                headers = {"Content-Type": "application/json"}
-
-                logger.info(f"🎵 Calling Glow-TTS server: {glow_tts_url}")
-                logger.info(f"🎵 TTS Input: {response_text[:50]}...")
-
-                timeout = aiohttp.ClientTimeout(total=config.TTS_TIMEOUT)
-                async with aio_session.post(
-                    glow_tts_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=timeout,
-                ) as tts_response:
-                    logger.info(
-                        f"🎵 Glow-TTS response status: {tts_response.status}"
-                    )
-                    if tts_response.status == 200:
-                        try:
-                            json_response = await tts_response.json()
-                            logger.info("🎵 Glow-TTS Response received")
-                            logger.info(
-                                f"🎵 Response keys: {list(json_response.keys())}"
-                            )
-                            logger.info(
-                                f"🎵 Response preview: {str(json_response)[:200]}"
-                            )
-
-                            if "audio" in json_response:
-                                audio_b64_from_api = json_response["audio"]
-                                logger.info(
-                                    f"🎵 Extracted base64 audio from Glow-TTS: {len(audio_b64_from_api)} chars"
-                                )
-
-                                audio_data = base64.b64decode(
-                                    audio_b64_from_api
-                                )
-                                content_type = "audio/wav"
-                                logger.info(
-                                    f"🎵 Decoded WAV audio: {len(audio_data)} bytes"
-                                )
-
-                                interruption_occurred = session.get(
-                                    "interrupted", False
-                                )
-                                interruption_time = session.get(
-                                    "interruption_time", 0
-                                )
-                                current_time = time.time()
-
-                                if (
-                                    audio_data
-                                    and len(audio_data) > 100
-                                    and not interruption_occurred
-                                ):
-                                    if not session.get("interrupted", False):
-                                        await websocket.send_json(
-                                            {
-                                                "type": "audio_response",
-                                                "data": audio_b64_from_api,
-                                                "content_type": content_type,
-                                                "size": len(audio_data),
-                                                "format": "wav_22050_16bit_mono",
-                                                "interruptible": True,
-                                                "chunk_id": int(
-                                                    current_time * 1000
-                                                ),
-                                            }
-                                        )
-                                        logger.info(
-                                            f"🔊 Interruptible audio sent: {len(audio_data)} bytes"
-                                        )
-
-                                        # TIMING: TTS complete
-                                        tts_complete_time = time.time()
-                                        logger.info(
-                                            f"⏱️ TTS took: {(tts_complete_time - llm_complete_time):.2f}s"
-                                        )
-                                        logger.info(
-                                            f"🎯 TOTAL PROCESSING TIME: {(tts_complete_time - process_start_time):.2f}s"
-                                        )
-                                    else:
-                                        logger.info(
-                                            "🛑 Audio blocked - interruption detected during send"
-                                        )
-                                else:
-                                    if interruption_occurred:
-                                        interruption_delay = (
-                                            current_time - interruption_time
-                                        )
-                                        logger.info(
-                                            f"🛑 Audio skipped - interrupted {interruption_delay:.3f}s ago"
-                                        )
-                                    else:
-                                        logger.error(
-                                            f"❌ Invalid audio data: {len(audio_data) if audio_data else 0} bytes"
-                                        )
-                                        await websocket.send_json(
-                                            {
-                                                "type": "error",
-                                                "text": "Invalid audio data from Glow-TTS",
-                                            }
-                                        )
-                            else:
-                                logger.error(
-                                    f"❌ No 'audio' field in Glow-TTS response: {list(json_response.keys())}"
-                                )
-                                await websocket.send_json(
-                                    {
-                                        "type": "error",
-                                        "text": "Glow-TTS returned response without audio field",
-                                    }
-                                )
-
-                        except json.JSONDecodeError as e:
-                            logger.error(
-                                f"❌ Failed to parse Glow-TTS JSON response: {e}"
-                            )
-                            response_text_preview = (
-                                await tts_response.text()
-                            )[:200]
-                            logger.error(
-                                f"❌ Response preview: {response_text_preview}"
-                            )
-                            await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "text": "Glow-TTS returned invalid JSON",
-                                }
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"❌ Glow-TTS processing error: {e}"
-                            )
-                            await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "text": f"Glow-TTS error: {str(e)}",
-                                }
-                            )
-                    else:
-                        error_text = await tts_response.text()
-                        logger.error(
-                            f"❌ TTS API error {tts_response.status}: {error_text}"
-                        )
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "text": f"TTS API failed: {tts_response.status}",
-                            }
-                        )
-
-            # Mark assistant finished speaking
-            if not session.get("interrupted", False):
-                session["assistant_speaking"] = False
-                await websocket.send_json(
-                    {"type": "processing_status", "status": "ready"}
-                )
-            else:
-                session["assistant_speaking"] = False
-                session["interrupted"] = False
-                logger.info("🛑 Assistant finished after interruption")
-
-        except asyncio.TimeoutError:
-            logger.error("❌ Glow-TTS request timeout - server took too long")
-            session["assistant_speaking"] = False
-            await websocket.send_json(
-                {"type": "error", "text": "TTS timeout - please try again"}
-            )
-        except aiohttp.ClientConnectorError as e:
-            logger.error(f"❌ Cannot connect to Glow-TTS server: {e}")
-            session["assistant_speaking"] = False
-            await websocket.send_json(
-                {"type": "error", "text": "TTS server unavailable"}
-            )
-        except Exception as e:
-            logger.error(f"❌ Speech processing error: {e}")
-            session["assistant_speaking"] = False
-            await websocket.send_json(
-                {"type": "error", "text": str(e)}
-            )
-        finally:
-            # Always reset processing flag
-            if session.get("processing_id") == request_id:
-                session["processing"] = False
-                session["processing_id"] = None
-                logger.info(
-                    f"🏁 REQUEST {request_id}: Processing completed and cleaned up"
-                )
-            else:
-                logger.warning(
-                    f"⚠️ REQUEST {request_id}: Cleanup skipped - different request is processing"
-                )
-
-    async def process_legacy_audio(self, session_id: str, base64_audio: str):
-        """Support legacy push-to-talk mode"""
-        session = self.active_sessions.get(session_id)
-        if not session:
-            return
-
-        logger.info("🔄 Processing legacy push-to-talk audio")
-        audio_bytes = base64.b64decode(base64_audio)
-        await self.process_complete_speech(session_id, audio_bytes)
-
-
-# Global handler
-enhanced_handler = EnhancedVoiceHandler()
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """Enhanced WebSocket endpoint"""
-    await enhanced_handler.handle_connection(websocket)
-
-
-@app.get("/")
-async def root():
-    """Serve enhanced web client"""
-    with open("web/index_enhanced.html", "r") as f:
-        return HTMLResponse(content=f.read())
-
+    if not audio_bytes:
+        return True
+
+    audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+    if audio_np.size == 0:
+        return True
+
+    energy = np.mean(np.abs(audio_np))
+    logger.debug(f"🔍 Audio energy: {energy:.2f}")
+
+    return energy < SILENCE_ENERGY_THRESHOLD
+
+
+def generate_speech_mp3(text: str) -> bytes:
+    """
+    Use Glow-TTS to generate waveform and encode as MP3.
+    """
+    logger.info(f"🗣️ Generating TTS for text: {text[:80]!r}")
+    # TTS returns a 1D float32 numpy array at 22050 Hz by default
+    wav = tts.tts(text)
+    wav = np.asarray(wav, dtype=np.float32)
+
+    # Normalise to int16 for pydub
+    wav_int16 = np.int16(wav / np.max(np.abs(wav)) * 32767)
+
+    # Convert to AudioSegment (assume 22050Hz mono)
+    audio_seg = AudioSegment(
+        wav_int16.tobytes(),
+        frame_rate=22050,
+        sample_width=2,
+        channels=1,
+    )
+
+    # Export as MP3 to bytes buffer
+    buf = io.BytesIO()
+    audio_seg.export(buf, format="mp3")
+    buf.seek(0)
+    mp3_bytes = buf.read()
+    logger.info(f"✅ TTS MP3 generated, {len(mp3_bytes)} bytes")
+    return mp3_bytes
+
+
+async def dummy_llm_reply(user_text: str, history: Optional[List[dict]] = None) -> str:
+    """
+    Placeholder LLM. Replace this with your actual model call.
+    This function is where hallucinations could start if called on junk text.
+    """
+    # Here you would call OpenAI / local LLM etc.
+    # Make sure to pass history if you want conversation context.
+    await asyncio.sleep(0.05)
+    return f"You said: {user_text}"
+
+
+# ---------------------------------------------------------------------
+# REST Endpoints
+# ---------------------------------------------------------------------
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy",
-        "service": "E2E Voice Assistant - Enhanced",
-        "version": "2.0.0",
-        "features": [
-            "VAD (Voice Activity Detection)",
-            "Interruption Handling",
-            "Audio Buffering",
-            "Conversation Context",
-            "Direct API Integration",
-        ],
-    }
+    return {"status": "ok"}
 
 
-async def startup_warmup():
-    """Optional startup warmup"""
-    import os
+@app.post("/v1/audio/speech", response_model=TTSSpeechResponse)
+async def tts_endpoint(req: TTSRequest):
+    """
+    Text → Glow-TTS → MP3 (base64).
+    """
+    text = (req.text or "").strip()
+    if not text:
+        return TTSSpeechResponse(audio_base64="", format="mp3")
 
-    if os.getenv("WARMUP_ON_START", "false").lower() == "true":
-        logger.info("🔥 Starting model warmup...")
+    mp3_bytes = generate_speech_mp3(text)
+    b64 = base64.b64encode(mp3_bytes).decode("utf-8")
+    return TTSSpeechResponse(audio_base64=b64, format="mp3")
+
+
+@app.post("/v1/chat", response_model=ChatResponse)
+async def chat_endpoint(req: ChatTextRequest):
+    """
+    Simple text chat endpoint using dummy LLM.
+    This shares the same guardrails as the voice flow.
+    """
+    text = (req.text or "").strip()
+
+    # Guard: ignore empty / extremely short input
+    if len(text) < MIN_TRANSCRIPT_CHARS:
+        logger.info("⚠️ Ignoring very short text input to avoid nonsense LLM calls.")
+        return ChatResponse(reply="")
+
+    reply = await dummy_llm_reply(text, req.history)
+    return ChatResponse(reply=reply)
+
+
+# ---------------------------------------------------------------------
+# WebSocket for voice conversation (template)
+# ---------------------------------------------------------------------
+# Protocol assumption:
+# - Client sends JSON messages:
+#   { "type": "audio", "audio_base64": "<...>" }  → single PCM16 chunk
+#   { "type": "end_utterance" }                  → finish current turn, run STT + LLM + TTS
+#   { "type": "reset" }                          → clear history
+#
+# - Server sends:
+#   { "type": "transcript", "text": "..." }
+#   { "type": "reply_text", "text": "..." }
+#   { "type": "reply_audio", "audio_base64": "<mp3>" }
+#   { "type": "info", "message": "..." }
+#
+# You can adapt this to match your real frontend exactly.
+# ---------------------------------------------------------------------
+
+class ConversationState:
+    def __init__(self):
+        self.buffers: List[bytes] = []
+        self.history: List[dict] = []
+        self.last_speech_ts: float = asyncio.get_event_loop().time()
+
+    def reset_audio(self):
+        self.buffers.clear()
+
+    def reset_all(self):
+        self.buffers.clear()
+        self.history.clear()
+
+    def append_audio(self, chunk: bytes):
+        self.buffers.append(chunk)
+        self.last_speech_ts = asyncio.get_event_loop().time()
+
+    def get_pcm(self) -> bytes:
+        if not self.buffers:
+            return b""
+        return b"".join(self.buffers)
+
+
+@app.websocket("/ws/voice")
+async def websocket_voice(ws: WebSocket):
+    """
+    Voice WebSocket with:
+    - silence detection
+    - transcript length guard
+    - optional history reset on long silence
+    - no random replies when no speech is detected
+    """
+    await ws.accept()
+    logger.info("🌐 Voice WebSocket connected")
+
+    state = ConversationState()
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            msg_type = msg.get("type")
+
+            # 1) Reset conversation explicitly from UI
+            if msg_type == "reset":
+                logger.info("🔁 Conversation reset requested from UI")
+                state.reset_all()
+                await ws.send_json({"type": "info", "message": "conversation_reset"})
+                continue
+
+            # 2) Audio chunk
+            if msg_type == "audio":
+                audio_b64 = msg.get("audio_base64", "")
+                if not audio_b64:
+                    continue
+
+                try:
+                    chunk = base64.b64decode(audio_b64)
+                except Exception as e:
+                    logger.warning(f"Failed to base64-decode audio chunk: {e}")
+                    continue
+
+                # Optional: quick silence check per chunk if you want to show "No speech detected" live
+                if is_silent_pcm16(chunk, SAMPLE_RATE):
+                    # You may or may not want to notify the UI here.
+                    await ws.send_json({"type": "info", "message": "no_speech_chunk"})
+                else:
+                    state.append_audio(chunk)
+
+                continue
+
+            # 3) End of utterance: run STT + LLM + TTS
+            if msg_type == "end_utterance":
+                full_pcm = state.get_pcm()
+                state.reset_audio()
+
+                # If no meaningful audio collected
+                if not full_pcm or is_silent_pcm16(full_pcm, SAMPLE_RATE):
+                    logger.info("⚠️ End utterance but no speech detected; skipping STT + LLM.")
+                    await ws.send_json({"type": "info", "message": "no_speech_detected"})
+                    # IMPORTANT: do NOT call LLM here → avoids random topic jumps
+                    continue
+
+                # -----------------------------------------------------------------
+                # TODO: Replace this with your Whisper / ASR call
+                # For now we simulate a transcript.
+                # -----------------------------------------------------------------
+                # Example if you use openai-whisper:
+                # import whisper
+                # model = whisper.load_model("small", device=device)
+                # audio_float = np.frombuffer(full_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+                # result = model.transcribe(audio_float, language="en")
+                # transcript = (result.get("text") or "").strip()
+                # -----------------------------------------------------------------
+                transcript = "dummy transcript from audio"  # placeholder
+                logger.info(f"📝 Transcript: {transcript!r}")
+                await ws.send_json({"type": "transcript", "text": transcript})
+
+                # Guard: if transcript is too short/empty, DO NOT call LLM
+                if not transcript or len(transcript) < MIN_TRANSCRIPT_CHARS:
+                    logger.info("⚠️ Transcript too short; skipping LLM/TTS to avoid hallucinations.")
+                    await ws.send_json({"type": "info", "message": "transcript_too_short"})
+                    continue
+
+                # Build history for LLM
+                state.history.append({"role": "user", "content": transcript})
+
+                # Call LLM safely
+                reply_text = await dummy_llm_reply(transcript, state.history)
+                logger.info(f"🤖 LLM reply: {reply_text!r}")
+                state.history.append({"role": "assistant", "content": reply_text})
+
+                await ws.send_json({"type": "reply_text", "text": reply_text})
+
+                # TTS for reply
+                mp3_bytes = generate_speech_mp3(reply_text)
+                reply_audio_b64 = base64.b64encode(mp3_bytes).decode("utf-8")
+                await ws.send_json({"type": "reply_audio", "audio_base64": reply_audio_b64})
+
+                continue
+
+            # 4) Unknown message type
+            logger.warning(f"Unknown WebSocket message type: {msg_type!r}")
+            await ws.send_json({"type": "info", "message": f"unknown_type:{msg_type}"})
+
+            # 5) Optional: long silence → reset conversation
+            now = asyncio.get_event_loop().time()
+            if now - state.last_speech_ts > MAX_SILENCE_SECONDS and state.history:
+                logger.info("⏱️ Long silence detected, resetting conversation history.")
+                state.reset_all()
+                await ws.send_json({"type": "info", "message": "auto_reset_due_to_silence"})
+
+    except WebSocketDisconnect:
+        logger.info("🔌 Voice WebSocket disconnected")
+    except Exception as e:
+        logger.exception(f"WebSocket error: {e}")
         try:
-            from warmup_models import ModelWarmer
+            await ws.send_json({"type": "error", "message": "internal_server_error"})
+        except Exception:
+            pass
 
-            warmer = ModelWarmer()
-            await warmer.warmup_all()
-            logger.info("🎉 Startup warmup completed!")
-        except Exception as e:
-            logger.warning(f"⚠️ Startup warmup failed: {e}")
 
+# ---------------------------------------------------------------------
+# Main entrypoint
+# ---------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("🚀 ENHANCED E2E VOICE ASSISTANT - FIXED & UNIFIED!")
-    logger.info("=" * 60)
-    logger.info("✅ FIXED: No more '1/3 indicators' - Simple reliable VAD")
-    logger.info("✅ UNIFIED: All config values from config_clean.py")
-    logger.info("✅ VAD - Simple energy-based detection")
-    logger.info("✅ Interruption - Stop assistant when you speak")
-    logger.info("✅ Audio Buffering - Smart audio processing")
-    logger.info("✅ Conversation Context - Remembers chat history")
-    logger.info("✅ Direct API - Your working E2E endpoints")
-    logger.info(f"🎤 VAD Energy Threshold: {config.VAD_ENERGY_THRESHOLD:,}")
-    logger.info(f"⏱️ Speech Timeout: {config.END_OF_SPEECH_THRESHOLD}s")
-    logger.info(
-        f"🧠 LLM Config: {config.LLM_MAX_TOKENS} tokens, temp={config.LLM_TEMPERATURE}"
+    uvicorn.run(
+        "server_enhanced:app",   # filename:app_name
+        host="0.0.0.0",
+        port=8000,
+        reload=True,             # disable in production
     )
-    logger.info("💡 TIP: Run 'python3 prepare_demo.py' to warm up models!")
-    logger.info("=" * 60)
-
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
