@@ -18,7 +18,7 @@ from pipecat.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import AudioRawFrame
 
 from loguru import logger
-import config
+import config_clean as config
 
 app = FastAPI(title="E2E Voice Assistant - Enhanced")
 
@@ -37,10 +37,10 @@ class EnhancedVoiceHandler:
     """
 
     def __init__(self):
-        # VAD setup
+        # VAD setup with unified config
         self.vad = SileroVADAnalyzer(
             params=VADParams(
-                confidence_threshold=config.VAD_THRESHOLD,
+                confidence_threshold=0.7,  # Keep this for Silero, main VAD uses energy
                 silence_duration_ms=int(config.END_OF_SPEECH_THRESHOLD * 1000)
             )
         )
@@ -52,7 +52,7 @@ class EnhancedVoiceHandler:
         self.models_warmed_up = False
         self.warmup_in_progress = False
 
-        logger.info("✅ Enhanced Voice Handler initialized with VAD")
+        logger.info("✅ Enhanced Voice Handler initialized with UNIFIED CONFIG + Simple VAD")
 
     async def handle_connection(self, websocket: WebSocket):
         """Handle enhanced WebSocket connection"""
@@ -172,42 +172,19 @@ class EnhancedVoiceHandler:
 
             speech_ratio = speech_energy / (total_energy + 1e-10)
 
-            # ULTRA CONSERVATIVE: Only detect very clear speech to prevent false positives
-            if assistant_speaking:
-                # Sensitive during interruption
-                energy_threshold = 0.020  # Conservative
-                zcr_min, zcr_max = 0.10, 0.4  # Tight range
-                speech_ratio_threshold = 0.4  # Higher threshold
-                logger.debug(f"🎤 Interruption Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
-            else:
-                # EXTREMELY STRICT - only very loud clear speech
-                energy_threshold = 0.100  # Very high - your speech peaks at ~0.07
-                zcr_min, zcr_max = 0.20, 0.30  # Extremely tight range
-                speech_ratio_threshold = 0.8  # Very high
-                logger.debug(f"🎤 Normal Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
+            # SIMPLE RELIABLE VAD: Use unified config energy threshold
+            # Convert energy to match config scale (energy is 0-1, config expects larger values)
+            audio_np = np.frombuffer(audio_frame.audio, dtype=np.int16)
+            energy_raw = np.mean(audio_np.astype(np.float64) ** 2)
 
-            # Combine multiple indicators
-            energy_speech = energy > energy_threshold
-            zcr_speech = zcr_min < zcr < zcr_max  # Speech has moderate ZCR
-            spectral_speech = speech_ratio > speech_ratio_threshold
-
-            # BALANCED: Require 2 out of 3 indicators to agree for reliable detection
-            speech_indicators = [energy_speech, zcr_speech, spectral_speech]
-            speech_detected = sum(speech_indicators) >= 2  # 2 out of 3 must agree
-
-            # Debug: Show exactly what's being detected
-            indicator_count = sum(speech_indicators)
-            if indicator_count > 0:
-                logger.debug(f"🔍 Indicators: E={energy_speech}, Z={zcr_speech}, S={spectral_speech} ({indicator_count}/3)")
+            # Simple, reliable speech detection using unified config
+            speech_detected = energy_raw > config.VAD_ENERGY_THRESHOLD
 
             if speech_detected:
-                confidence = sum(speech_indicators) / 3.0
-                logger.debug(f"✅ Speech detected - Confidence: {confidence:.2f}")
-            elif indicator_count > 0:
-                logger.debug(f"🤏 Close but no speech ({indicator_count}/3 indicators)")
+                logger.debug(f"✅ Speech detected - Energy: {energy_raw:.0f} > {config.VAD_ENERGY_THRESHOLD:.0f}")
 
-                if assistant_speaking:
-                    logger.info(f"🛑 INTERRUPTION DETECTED! Confidence: {confidence:.2f}")
+            if assistant_speaking and speech_detected:
+                logger.info(f"🛑 INTERRUPTION DETECTED! Energy: {energy_raw:.0f}")
 
             return speech_detected
 
@@ -475,32 +452,19 @@ class EnhancedVoiceHandler:
             logger.info(f"🧠 SESSION {session_id}: Added user message. Context length: {len(session['conversation_context'])}")
             logger.info(f"🧠 SESSION {session_id}: User said: '{text[:50]}{'...' if len(text) > 50 else ''}')")
 
-            # Enhanced system prompt for professional responses
-            system_prompt = """You are an intelligent and professional voice assistant. Your responses should be:
-
-1. CLEAR & CONCISE: Give direct, well-structured answers
-2. PROFESSIONAL: Use proper language, avoid slang, be courteous
-3. HELPFUL: Provide actionable information and follow-up suggestions when appropriate
-4. CONVERSATIONAL: Sound natural for voice interaction, but maintain professionalism
-5. CONTEXTUAL: Remember the conversation flow and build upon previous exchanges
-
-Guidelines:
-- Keep responses between 20-50 words for voice interaction
-- Use complete sentences with proper grammar
-- Acknowledge user questions directly before providing information
-- End with engagement when appropriate (e.g., "Would you like me to elaborate on any part?")
-- If uncertain, clearly state limitations rather than guessing"""
+            # Use unified system prompt from config
+            system_prompt = config.SYSTEM_PROMPT
 
             response = await client.chat.completions.create(
                 model=config.LLAMA_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt}
-                ] + session['conversation_context'][-10:],  # Keep more context
-                max_tokens=150,  # Allow longer responses
-                temperature=0.7,  # Balanced creativity
-                top_p=0.9,       # Focus on high-quality tokens
-                presence_penalty=0.1,  # Encourage new topics
-                frequency_penalty=0.1   # Reduce repetition
+                ] + session['conversation_context'][-config.CONVERSATION_CONTEXT_LENGTH:],
+                max_tokens=config.LLM_MAX_TOKENS,
+                temperature=config.LLM_TEMPERATURE,
+                top_p=config.LLM_TOP_P,
+                presence_penalty=config.LLM_PRESENCE_PENALTY,
+                frequency_penalty=config.LLM_FREQUENCY_PENALTY
             )
 
             response_text = response.choices[0].message.content
@@ -696,14 +660,19 @@ async def startup_warmup():
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("🚀 ENHANCED E2E VOICE ASSISTANT")
-    logger.info("=" * 50)
-    logger.info("✅ VAD - Automatic voice detection")
+    logger.info("🚀 ENHANCED E2E VOICE ASSISTANT - FIXED & UNIFIED!")
+    logger.info("=" * 60)
+    logger.info("✅ FIXED: No more '1/3 indicators' - Simple reliable VAD")
+    logger.info("✅ UNIFIED: All config values from config_clean.py")
+    logger.info("✅ VAD - Simple energy-based detection")
     logger.info("✅ Interruption - Stop assistant when you speak")
     logger.info("✅ Audio Buffering - Smart audio processing")
     logger.info("✅ Conversation Context - Remembers chat history")
     logger.info("✅ Direct API - Your working E2E endpoints")
+    logger.info(f"🎤 VAD Energy Threshold: {config.VAD_ENERGY_THRESHOLD:,}")
+    logger.info(f"⏱️ Speech Timeout: {config.END_OF_SPEECH_THRESHOLD}s")
+    logger.info(f"🧠 LLM Config: {config.LLM_MAX_TOKENS} tokens, temp={config.LLM_TEMPERATURE}")
     logger.info("💡 TIP: Run 'python3 prepare_demo.py' to warm up models!")
-    logger.info("=" * 50)
+    logger.info("=" * 60)
 
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
