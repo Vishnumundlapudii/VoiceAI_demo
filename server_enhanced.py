@@ -322,24 +322,49 @@ class EnhancedVoiceHandler:
         if not session:
             return
 
-        # Enhanced session state checking
+        # Enhanced session state checking with REQUEST ID
+        request_id = int(time.time() * 1000)  # Unique request ID
+        logger.info(f"🆔 REQUEST {request_id}: Starting speech processing")
+
         if session.get('interrupted', False):
-            logger.info("🛑 Skipping speech processing - assistant was interrupted")
+            logger.info(f"🛑 REQUEST {request_id}: Skipping - assistant was interrupted")
             session['interrupted'] = False  # Reset flag
             return
 
-        if session.get('assistant_speaking', False):
-            logger.info("🛑 Skipping speech processing - assistant is already speaking")
-            return
-
-        # Prevent concurrent processing
+        # SMART: Allow interruptions, prevent duplicate processing
         if session.get('processing', False):
-            logger.info("🛑 Skipping speech processing - already processing another request")
-            return
+            current_processing_id = session.get('processing_id', 'unknown')
+
+            # SPECIAL CASE: Allow interruption during assistant speaking
+            if session.get('assistant_speaking', False):
+                logger.info(f"🚨 REQUEST {request_id}: INTERRUPTION detected during assistant speaking!")
+                # Cancel current processing and allow this interruption
+                session['processing'] = False
+                session['processing_id'] = None
+                session['assistant_speaking'] = False
+                session['interrupted'] = True
+
+                # Send immediate stop
+                await websocket.send_json({
+                    "type": "stop_audio",
+                    "priority": "immediate",
+                    "reason": "user_interruption"
+                })
+
+                # Continue processing the interruption...
+            else:
+                # Normal case: Block duplicate requests when not speaking
+                logger.info(f"🛑 REQUEST {request_id}: Skipping - already processing request {current_processing_id}")
+                return
 
         session['processing'] = True  # Set processing flag
+        session['processing_id'] = request_id  # Track which request is processing
 
         websocket = session['websocket']
+
+        # PERFORMANCE TRACKING: Start timing
+        process_start_time = time.time()
+        logger.info(f"🕐 REQUEST {request_id}: STARTED processing at {process_start_time}")
 
         try:
             import aiohttp
@@ -347,17 +372,24 @@ class EnhancedVoiceHandler:
             import io
             import wave
 
-            logger.info(f"🎯 Processing {len(speech_audio)} bytes of speech")
+            logger.info(f"🎯 REQUEST {request_id}: Processing {len(speech_audio)} bytes of speech")
 
-            # ACCURACY FIRST: Minimal validation - try to transcribe everything
-            min_audio_samples = int(config.SAMPLE_RATE * 0.1)  # Only 0.1 second minimum
+            # HANDLE SHORT PHRASES: Very minimal validation for short questions
+            min_audio_samples = int(config.SAMPLE_RATE * 0.05)  # 0.05 second = very short
             if len(speech_audio) < min_audio_samples * 2:  # 2 bytes per sample (16-bit)
-                logger.warning(f"⚠️ Audio extremely short: {len(speech_audio)} bytes, skipping transcription")
+                logger.warning(f"⚠️ REQUEST {request_id}: Audio extremely short: {len(speech_audio)} bytes, skipping")
                 await websocket.send_json({
                     "type": "error",
-                    "message": "No audio detected - please try again"
+                    "message": "Please speak a bit louder or longer"
                 })
                 return
+
+            # Log audio details for debugging short phrases
+            audio_duration = len(speech_audio) / (config.SAMPLE_RATE * 2)
+            logger.info(f"📏 REQUEST {request_id}: Audio duration: {audio_duration:.3f} seconds")
+
+            if audio_duration < 0.5:
+                logger.info(f"📢 REQUEST {request_id}: SHORT PHRASE detected - processing with extra care")
 
             # Convert raw audio to proper WAV format
             wav_buffer = io.BytesIO()
@@ -371,13 +403,17 @@ class EnhancedVoiceHandler:
             logger.info(f"🎵 Converted to WAV: {len(wav_data)} bytes (was {len(speech_audio)} raw bytes)")
             logger.info(f"🎵 Audio duration: {len(speech_audio) / (config.SAMPLE_RATE * 2):.2f} seconds")
 
+            # TIMING: Audio processing complete
+            audio_process_time = time.time()
+            logger.info(f"⏱️ Audio processing took: {(audio_process_time - process_start_time):.2f}s")
+
             await websocket.send_json({
                 "type": "processing_status",
                 "status": "transcribing"
             })
 
-            # 1. Transcribe with Whisper - ACCURACY FIRST (Patient)
-            timeout = aiohttp.ClientTimeout(total=15)  # Longer timeout for accuracy
+            # 1. Transcribe with Whisper - FASTER timeout
+            timeout = aiohttp.ClientTimeout(total=8)  # Reasonable timeout
             async with aiohttp.ClientSession(timeout=timeout) as aio_session:
                 data = aiohttp.FormData()
                 # Use the proper WAV data instead of raw audio
@@ -399,7 +435,11 @@ class EnhancedVoiceHandler:
                             logger.warning(f"⚠️ Whisper returned empty text")
                             text = "[No speech detected]"
 
-                        logger.info(f"✅ TRANSCRIPTION RESULT: '{text}'")
+                        logger.info(f"✅ REQUEST {request_id}: TRANSCRIPTION RESULT: '{text}'")
+
+                        # TIMING: Whisper complete
+                        whisper_complete_time = time.time()
+                        logger.info(f"⏱️ REQUEST {request_id}: Whisper took: {(whisper_complete_time - audio_process_time):.2f}s")
 
                     else:
                         error_text = await response.text()
@@ -453,6 +493,10 @@ Guidelines:
             response_text = response.choices[0].message.content
             logger.info(f"💬 Response: {response_text}")
 
+            # TIMING: LLM complete
+            llm_complete_time = time.time()
+            logger.info(f"⏱️ LLM took: {(llm_complete_time - whisper_complete_time):.2f}s")
+
             # Add to conversation context
             session['conversation_context'].append({"role": "assistant", "content": response_text})
 
@@ -477,8 +521,8 @@ Guidelines:
                 logger.info(f"🎵 Calling Glow-TTS server: {glow_tts_url}")
                 logger.info(f"🎵 TTS Input: {response_text[:50]}...")
 
-                # LATENCY OPTIMIZED: Aggressive timeout
-                timeout = aiohttp.ClientTimeout(total=6)  # Reduced to 6 seconds
+                # REASONABLE TTS timeout
+                timeout = aiohttp.ClientTimeout(total=5)  # 5 seconds for TTS
                 async with aio_session.post(glow_tts_url, json=payload, headers=headers, timeout=timeout) as tts_response:
                     logger.info(f"🎵 Glow-TTS response status: {tts_response.status}")
                     if tts_response.status == 200:
@@ -519,6 +563,12 @@ Guidelines:
                                             "chunk_id": int(current_time * 1000)  # Unique chunk ID
                                         })
                                         logger.info(f"🔊 Interruptible audio sent: {len(audio_data)} bytes")
+
+                                        # TIMING: TTS complete
+                                        tts_complete_time = time.time()
+                                        logger.info(f"⏱️ TTS took: {(tts_complete_time - llm_complete_time):.2f}s")
+                                        logger.info(f"🎯 TOTAL PROCESSING TIME: {(tts_complete_time - process_start_time):.2f}s")
+
                                     else:
                                         logger.info("🛑 Audio blocked - interruption detected during send")
                                 else:
@@ -569,7 +619,12 @@ Guidelines:
             await websocket.send_json({"type": "error", "text": str(e)})
         finally:
             # Always reset processing flag
-            session['processing'] = False
+            if session.get('processing_id') == request_id:
+                session['processing'] = False
+                session['processing_id'] = None
+                logger.info(f"🏁 REQUEST {request_id}: Processing completed and cleaned up")
+            else:
+                logger.warning(f"⚠️ REQUEST {request_id}: Cleanup skipped - different request is processing")
 
     async def process_legacy_audio(self, session_id: str, base64_audio: str):
         """Support legacy push-to-talk mode"""
