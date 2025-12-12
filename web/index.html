@@ -203,6 +203,7 @@
                 this.isConnected = false;
                 this.isTalking = false;
                 this.audioChunks = [];
+                this.currentAudio = null;
 
                 this.connectBtn = document.getElementById('connectBtn');
                 this.talkBtn = document.getElementById('talkBtn');
@@ -398,6 +399,10 @@
                         case 'audio_response':
                             this.playAudio(message.data);
                             break;
+                        case 'stop_audio':
+                            this.stopCurrentAudio();
+                            this.addMessage('System', '⚡ Interrupted');
+                            break;
                         case 'error':
                             this.addMessage('System', `Error: ${message.text}`);
                             break;
@@ -408,13 +413,30 @@
             }
 
             playAudio(base64Data) {
+                // Stop any currently playing audio first
+                this.stopCurrentAudio();
+
                 // Convert base64 to audio and play
                 const binaryString = atob(base64Data);
                 const audioBlob = new Blob([new Uint8Array([...binaryString].map(char => char.charCodeAt(0)))], {type: 'audio/wav'});
                 const audioUrl = URL.createObjectURL(audioBlob);
 
-                const audio = new Audio(audioUrl);
-                audio.play().catch(e => console.error('Audio play error:', e));
+                this.currentAudio = new Audio(audioUrl);
+                this.currentAudio.play().catch(e => console.error('Audio play error:', e));
+
+                // Clear reference when audio ends
+                this.currentAudio.addEventListener('ended', () => {
+                    this.currentAudio = null;
+                });
+            }
+
+            stopCurrentAudio() {
+                if (this.currentAudio) {
+                    this.currentAudio.pause();
+                    this.currentAudio.currentTime = 0;
+                    this.currentAudio = null;
+                    console.log('🛑 Audio stopped for interruption');
+                }
             }
 
             addMessage(sender, text) {
