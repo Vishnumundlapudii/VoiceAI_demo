@@ -39,7 +39,7 @@ END_OF_SPEECH_THRESHOLD = 2.5       # More time to finish speaking before proces
 SPEECH_TIMEOUT_THRESHOLD = 15.0     # Max speech duration before timeout
 
 # Minimum audio requirements
-MIN_AUDIO_DURATION = 0.05            # Minimum speech duration (seconds)
+MIN_AUDIO_DURATION = 1.0             # Require longer speech for better Whisper accuracy
 
 # =============================================================================
 # LANGUAGE MODEL (LLM) CONFIGURATION
