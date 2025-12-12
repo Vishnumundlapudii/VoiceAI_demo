@@ -172,18 +172,18 @@ class EnhancedVoiceHandler:
 
             speech_ratio = speech_energy / (total_energy + 1e-10)
 
-            # BALANCED: Detect real speech but prevent background noise false positives
+            # ULTRA CONSERVATIVE: Only detect very clear speech to prevent false positives
             if assistant_speaking:
                 # Sensitive during interruption
-                energy_threshold = 0.012  # Moderately sensitive
-                zcr_min, zcr_max = 0.06, 0.6  # Reasonable range
-                speech_ratio_threshold = 0.3  # Moderate threshold
+                energy_threshold = 0.020  # Conservative
+                zcr_min, zcr_max = 0.10, 0.4  # Tight range
+                speech_ratio_threshold = 0.4  # Higher threshold
                 logger.debug(f"🎤 Interruption Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
             else:
-                # Balanced normal speech detection - catch speech but not noise
-                energy_threshold = 0.018  # Higher than background noise but catches speech
-                zcr_min, zcr_max = 0.08, 0.5  # Reasonable speech range
-                speech_ratio_threshold = 0.35  # Moderate speech content threshold
+                # VERY CONSERVATIVE - only detect clear speech
+                energy_threshold = 0.030  # Much higher - your background noise is ~0.005-0.010
+                zcr_min, zcr_max = 0.15, 0.35  # Very tight range - exclude your 0.03-0.08 noise
+                speech_ratio_threshold = 0.7  # Much higher - your noise hits 0.5-0.6
                 logger.debug(f"🎤 Normal Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
 
             # Combine multiple indicators
