@@ -128,35 +128,88 @@ class EnhancedVoiceHandler:
             logger.error(f"❌ Audio chunk processing error: {e}")
 
     async def detect_speech(self, audio_frame: AudioRawFrame, assistant_speaking: bool = False) -> bool:
-        """Use VAD to detect speech in audio frame"""
+        """Enhanced VAD with adaptive thresholds and noise filtering"""
         try:
-            # Simple amplitude-based VAD as fallback if Silero fails
             import numpy as np
+            import scipy.signal
 
             # Convert bytes to numpy array
             audio_np = np.frombuffer(audio_frame.audio, dtype=np.int16)
 
-            # Calculate volume/energy
-            volume = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
+            if len(audio_np) == 0:
+                return False
 
-            # Use more sensitive threshold during assistant speaking for interruption
+            # Convert to float and normalize
+            audio_float = audio_np.astype(np.float32) / 32768.0
+
+            # Apply high-pass filter to remove low-frequency noise
+            nyquist = config.SAMPLE_RATE / 2
+            cutoff = 100  # Hz - remove low frequency rumble
+            b, a = scipy.signal.butter(2, cutoff / nyquist, btype='high')
+            filtered_audio = scipy.signal.filtfilt(b, a, audio_float)
+
+            # Multiple detection methods for robustness
+
+            # 1. Energy-based detection
+            energy = np.sqrt(np.mean(filtered_audio ** 2))
+
+            # 2. Zero-crossing rate (helps distinguish speech from noise)
+            zcr = np.mean(np.diff(np.sign(filtered_audio)) != 0)
+
+            # 3. Spectral features
+            fft = np.fft.fft(filtered_audio)
+            magnitude = np.abs(fft[:len(fft)//2])
+
+            # Focus on speech frequency range (300-3400 Hz)
+            freqs = np.fft.fftfreq(len(filtered_audio), 1/config.SAMPLE_RATE)[:len(fft)//2]
+            speech_band = (freqs >= 300) & (freqs <= 3400)
+            speech_energy = np.sum(magnitude[speech_band])
+            total_energy = np.sum(magnitude)
+
+            speech_ratio = speech_energy / (total_energy + 1e-10)
+
+            # Adaptive thresholds
             if assistant_speaking:
-                speech_threshold = 800   # More sensitive for interruption
-                logger.debug(f"🎤 Interruption detection - Volume: {volume:.0f}, Threshold: {speech_threshold}")
+                # More sensitive during interruption
+                energy_threshold = 0.008
+                zcr_min, zcr_max = 0.05, 0.6
+                speech_ratio_threshold = 0.3
+                logger.debug(f"🎤 Interruption - Energy: {energy:.4f}, ZCR: {zcr:.3f}, SpeechRatio: {speech_ratio:.3f}")
             else:
-                speech_threshold = 1000  # Normal threshold
-                logger.debug(f"🎤 Normal VAD - Volume: {volume:.0f}, Threshold: {speech_threshold}")
+                # Normal speech detection
+                energy_threshold = 0.015
+                zcr_min, zcr_max = 0.08, 0.5
+                speech_ratio_threshold = 0.4
+                logger.debug(f"🎤 Normal VAD - Energy: {energy:.4f}, ZCR: {zcr:.3f}, SpeechRatio: {speech_ratio:.3f}")
 
-            speech_detected = volume > speech_threshold
+            # Combine multiple indicators
+            energy_speech = energy > energy_threshold
+            zcr_speech = zcr_min < zcr < zcr_max  # Speech has moderate ZCR
+            spectral_speech = speech_ratio > speech_ratio_threshold
 
-            if speech_detected and assistant_speaking:
-                logger.info(f"🛑 INTERRUPTION DETECTED! Volume: {volume:.0f}")
+            # Decision logic: at least 2 out of 3 indicators must agree
+            speech_indicators = [energy_speech, zcr_speech, spectral_speech]
+            speech_detected = sum(speech_indicators) >= 2
+
+            if speech_detected:
+                confidence = sum(speech_indicators) / 3.0
+                logger.debug(f"✅ Speech detected - Confidence: {confidence:.2f}")
+
+                if assistant_speaking:
+                    logger.info(f"🛑 INTERRUPTION DETECTED! Confidence: {confidence:.2f}")
 
             return speech_detected
 
         except Exception as e:
-            logger.error(f"❌ VAD detection error: {e}")
-            return False
+            logger.error(f"❌ Enhanced VAD detection error: {e}")
+            # Fallback to simple energy detection
+            try:
+                audio_np = np.frombuffer(audio_frame.audio, dtype=np.int16)
+                volume = np.sqrt(np.mean(audio_np.astype(np.float32) ** 2))
+                threshold = 800 if assistant_speaking else 1200
+                return volume > threshold
+            except:
+                return False
 
     async def handle_speech_detected(self, session_id: str, audio_bytes: bytes):
         """Handle when speech is detected"""
@@ -171,30 +224,38 @@ class EnhancedVoiceHandler:
             logger.info("🗣️ VAD: Speech started")
             session['is_speaking'] = True
             session['audio_buffer'] = bytearray()
-            session['last_speech_time'] = time.time()
+            current_time = time.time()
+            session['last_speech_time'] = current_time
+            session['speech_start_time'] = current_time  # Track when speech began
             session['interrupted'] = False  # Reset interruption flag
 
-            # Stop assistant if it's speaking (INTERRUPTION)
+            # Enhanced interruption handling
             if session['assistant_speaking']:
-                logger.info("🛑 INTERRUPTION: User interrupted assistant")
+                logger.info("🛑 FAST INTERRUPTION: User interrupted assistant")
                 session['assistant_speaking'] = False
-                session['interrupted'] = True  # Set interruption flag
+                session['interrupted'] = True
+                session['interruption_time'] = time.time()
 
-                # Send stop audio FIRST, then interruption message
+                # Send immediate stop signal with priority
                 await websocket.send_json({
                     "type": "stop_audio",
-                    "message": "Stop current audio playback"
+                    "priority": "immediate",
+                    "timestamp": time.time(),
+                    "message": "Audio stopped immediately"
                 })
 
+                # Send interruption confirmation
                 await websocket.send_json({
                     "type": "interruption",
-                    "message": "🛑 Assistant interrupted - listening to you"
+                    "response_time_ms": 0,  # Immediate
+                    "message": "⚡ Quick interruption - I'm listening"
                 })
 
-                # Also send immediate status update
+                # Set status to ready for user input
                 await websocket.send_json({
                     "type": "processing_status",
-                    "status": "ready"
+                    "status": "ready",
+                    "message": "Ready for your input"
                 })
 
             await websocket.send_json({
@@ -208,7 +269,7 @@ class EnhancedVoiceHandler:
         session['last_speech_time'] = time.time()
 
     async def handle_no_speech(self, session_id: str):
-        """Handle when no speech is detected"""
+        """Handle when no speech is detected with improved timing"""
         session = self.active_sessions.get(session_id)
         if not session or not session['is_speaking']:
             return
@@ -217,9 +278,26 @@ class EnhancedVoiceHandler:
         current_time = time.time()
         silence_duration = current_time - session['last_speech_time']
 
-        if silence_duration >= config.END_OF_SPEECH_THRESHOLD:
+        # Get speech start time for total duration check
+        speech_start_time = session.get('speech_start_time', current_time)
+        total_speech_duration = current_time - speech_start_time
+
+        # Use adaptive threshold based on speech length
+        # Longer speeches need longer pauses to confirm end
+        if total_speech_duration > 3.0:
+            # For longer speeches, require longer silence
+            required_silence = config.END_OF_SPEECH_THRESHOLD * 1.5
+        else:
+            required_silence = config.END_OF_SPEECH_THRESHOLD
+
+        # Also check for absolute timeout to prevent infinite recording
+        if silence_duration >= required_silence or total_speech_duration > config.SPEECH_TIMEOUT_THRESHOLD:
             # Speech ended - process the audio
-            logger.info("✅ VAD: Speech ended, processing...")
+            if total_speech_duration > config.SPEECH_TIMEOUT_THRESHOLD:
+                logger.info(f"⏱️ VAD: Speech timeout after {total_speech_duration:.1f}s, processing...")
+            else:
+                logger.info(f"✅ VAD: Speech ended after {silence_duration:.1f}s silence, processing...")
+
             session['is_speaking'] = False
 
             if len(session['audio_buffer']) > 0:
@@ -306,12 +384,32 @@ class EnhancedVoiceHandler:
             # Add to conversation context
             session['conversation_context'].append({"role": "user", "content": text})
 
+            # Enhanced system prompt for professional responses
+            system_prompt = """You are an intelligent and professional voice assistant. Your responses should be:
+
+1. CLEAR & CONCISE: Give direct, well-structured answers
+2. PROFESSIONAL: Use proper language, avoid slang, be courteous
+3. HELPFUL: Provide actionable information and follow-up suggestions when appropriate
+4. CONVERSATIONAL: Sound natural for voice interaction, but maintain professionalism
+5. CONTEXTUAL: Remember the conversation flow and build upon previous exchanges
+
+Guidelines:
+- Keep responses between 20-50 words for voice interaction
+- Use complete sentences with proper grammar
+- Acknowledge user questions directly before providing information
+- End with engagement when appropriate (e.g., "Would you like me to elaborate on any part?")
+- If uncertain, clearly state limitations rather than guessing"""
+
             response = await client.chat.completions.create(
                 model=config.LLAMA_MODEL,
                 messages=[
-                    {"role": "system", "content": "You are a helpful voice assistant. Be conversational and concise."}
-                ] + session['conversation_context'][-6:],  # Keep last 3 turns
-                max_tokens=150
+                    {"role": "system", "content": system_prompt}
+                ] + session['conversation_context'][-8:],  # Keep last 4 turns for better context
+                max_tokens=200,  # Increased for more complete responses
+                temperature=0.7,  # Balanced creativity
+                top_p=0.9,       # Focus on high-quality tokens
+                presence_penalty=0.1,  # Encourage new topics
+                frequency_penalty=0.1   # Reduce repetition
             )
 
             response_text = response.choices[0].message.content
@@ -363,20 +461,32 @@ class EnhancedVoiceHandler:
                                 content_type = 'audio/wav'  # Glow-TTS returns WAV format
                                 logger.info(f"🎵 Decoded WAV audio: {len(audio_data)} bytes")
 
-                                # Check if we got valid audio data and not interrupted
-                                if audio_data and len(audio_data) > 100 and not session.get('interrupted', False):
-                                    # Send audio directly as base64 (already encoded from API)
-                                    await websocket.send_json({
-                                        "type": "audio_response",
-                                        "data": audio_b64_from_api,  # Use original base64 from API
-                                        "content_type": content_type,
-                                        "size": len(audio_data),
-                                        "format": "wav_22050_16bit_mono"
-                                    })
-                                    logger.info(f"🔊 Glow-TTS audio response sent: {len(audio_data)} bytes, format: WAV")
+                                # Enhanced interruption checking with timing
+                                interruption_occurred = session.get('interrupted', False)
+                                interruption_time = session.get('interruption_time', 0)
+                                current_time = time.time()
+
+                                # Check if interruption happened recently or is active
+                                if audio_data and len(audio_data) > 100 and not interruption_occurred:
+                                    # Double-check for interruption right before sending
+                                    if not session.get('interrupted', False):
+                                        # Send audio with interruption monitoring
+                                        await websocket.send_json({
+                                            "type": "audio_response",
+                                            "data": audio_b64_from_api,
+                                            "content_type": content_type,
+                                            "size": len(audio_data),
+                                            "format": "wav_22050_16bit_mono",
+                                            "interruptible": True,  # Mark as interruptible
+                                            "chunk_id": int(current_time * 1000)  # Unique chunk ID
+                                        })
+                                        logger.info(f"🔊 Interruptible audio sent: {len(audio_data)} bytes")
+                                    else:
+                                        logger.info("🛑 Audio blocked - interruption detected during send")
                                 else:
-                                    if session.get('interrupted', False):
-                                        logger.info("🛑 Skipping audio send - user interrupted")
+                                    if interruption_occurred:
+                                        interruption_delay = current_time - interruption_time
+                                        logger.info(f"🛑 Audio skipped - interrupted {interruption_delay:.3f}s ago")
                                     else:
                                         logger.error(f"❌ Invalid audio data: {len(audio_data) if audio_data else 0} bytes")
                                         await websocket.send_json({"type": "error", "text": "Invalid audio data from Glow-TTS"})

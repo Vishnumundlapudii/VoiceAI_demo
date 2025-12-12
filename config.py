@@ -25,8 +25,9 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 
 # Pipeline Settings
-VAD_THRESHOLD = 0.5  # Voice activity detection threshold
-END_OF_SPEECH_THRESHOLD = 1.0  # Seconds of silence to consider end of speech
+VAD_THRESHOLD = 0.3  # Lower threshold for better sensitivity
+END_OF_SPEECH_THRESHOLD = 2.0  # Longer pause to prevent cutting off speech
+SPEECH_TIMEOUT_THRESHOLD = 8.0  # Maximum continuous speech duration
 
 # Display loaded configuration (for debugging)
 if __name__ == "__main__":
