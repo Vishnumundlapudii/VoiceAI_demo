@@ -35,7 +35,7 @@ AUDIO_BIT_DEPTH = 16       # 16-bit audio
 VAD_ENERGY_THRESHOLD = 1200.0     # RMS volume threshold for VAD (back to working setting)
 
 # Speech timing parameters
-END_OF_SPEECH_THRESHOLD = 1.5       # Seconds of silence before processing speech
+END_OF_SPEECH_THRESHOLD = 2.0       # Seconds of silence before processing speech (longer for complete questions)
 SPEECH_TIMEOUT_THRESHOLD = 15.0     # Max speech duration before timeout
 
 # Minimum audio requirements

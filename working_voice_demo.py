@@ -203,10 +203,10 @@ class DemoVoiceHandler:
         session["processing"] = True
 
         try:
-            # Quick audio validation
+            # Quick audio validation - be less aggressive about short audio
             audio_duration = len(speech_audio) / (config.SAMPLE_RATE * 2)
-            if audio_duration < 0.1:
-                logger.warning("⚠️ Audio too short, skipping")
+            if audio_duration < 0.05:  # Very short threshold
+                logger.warning("⚠️ Audio extremely short, skipping")
                 return
 
             logger.info(f"🎯 Processing {audio_duration:.2f}s of speech")
