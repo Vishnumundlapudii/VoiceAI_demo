@@ -35,11 +35,11 @@ AUDIO_BIT_DEPTH = 16       # 16-bit audio
 VAD_ENERGY_THRESHOLD = 3000000      # Set below your actual speech energy
 
 # Speech timing parameters
-END_OF_SPEECH_THRESHOLD = 2.5       # More time to finish speaking before processing
+END_OF_SPEECH_THRESHOLD = 1.5       # Seconds of silence before processing speech
 SPEECH_TIMEOUT_THRESHOLD = 15.0     # Max speech duration before timeout
 
 # Minimum audio requirements
-MIN_AUDIO_DURATION = 1.0             # Require longer speech for better Whisper accuracy
+MIN_AUDIO_DURATION = 0.05            # Minimum speech duration (seconds)
 
 # =============================================================================
 # LANGUAGE MODEL (LLM) CONFIGURATION
