@@ -771,7 +771,7 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/")
 async def root():
     """Serve enhanced web client"""
-    with open("web/index.html", "r") as f:
+    with open("web/index_enhanced.html", "r") as f:
         return HTMLResponse(content=f.read())
 
 
