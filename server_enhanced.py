@@ -23,6 +23,12 @@ from config_clean import (
 )
 
 # -------------------------------------------------------------------
+# Paths
+# -------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WEB_DIR = os.path.join(BASE_DIR, "web")
+
+# -------------------------------------------------------------------
 # Logging setup
 # -------------------------------------------------------------------
 logging.basicConfig(
@@ -48,11 +54,8 @@ app.add_middleware(
 )
 
 # -------------------------------------------------------------------
-# Serve UI (index_enhanced.html / index.html) at `/` from ./web
+# Serve UI (index_enhanced.html / index.html) at `/`
 # -------------------------------------------------------------------
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-WEB_DIR = os.path.join(BASE_DIR, "web")
 
 
 @app.get("/")
@@ -60,20 +63,16 @@ def serve_ui():
     """
     Serve the UI HTML directly from the backend so that
     opening the ngrok URL shows the UI page like before.
-    Looks for files inside the ./web directory.
+    Looks inside the `web/` directory.
     """
-    # Try index_enhanced.html first, then index.html inside ./web
     for name in ["index_enhanced.html", "index.html"]:
         candidate = os.path.join(WEB_DIR, name)
         if os.path.exists(candidate):
             return FileResponse(candidate)
 
-    # If nothing found, show a clear message
     return JSONResponse(
         status_code=404,
-        content={
-            "detail": "UI file not found in ./web (index_enhanced.html / index.html)."
-        },
+        content={"detail": "UI file not found in ./web (index_enhanced.html / index.html)."},
     )
 
 
