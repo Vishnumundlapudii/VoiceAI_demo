@@ -470,8 +470,10 @@ class EnhancedVoiceHandler:
                 base_url=config.LLAMA_BASE_URL
             )
 
-            # Add to conversation context
+            # Add to conversation context with debug logging
             session['conversation_context'].append({"role": "user", "content": text})
+            logger.info(f"🧠 SESSION {session_id}: Added user message. Context length: {len(session['conversation_context'])}")
+            logger.info(f"🧠 SESSION {session_id}: User said: '{text[:50]}{'...' if len(text) > 50 else ''}')")
 
             # Enhanced system prompt for professional responses
             system_prompt = """You are an intelligent and professional voice assistant. Your responses should be:
@@ -493,8 +495,8 @@ Guidelines:
                 model=config.LLAMA_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt}
-                ] + session['conversation_context'][-6:],  # Reduced context for speed
-                max_tokens=100,  # REDUCED for faster generation
+                ] + session['conversation_context'][-10:],  # Keep more context
+                max_tokens=150,  # Allow longer responses
                 temperature=0.7,  # Balanced creativity
                 top_p=0.9,       # Focus on high-quality tokens
                 presence_penalty=0.1,  # Encourage new topics
@@ -508,8 +510,10 @@ Guidelines:
             llm_complete_time = time.time()
             logger.info(f"⏱️ LLM took: {(llm_complete_time - whisper_complete_time):.2f}s")
 
-            # Add to conversation context
+            # Add to conversation context with debug logging
             session['conversation_context'].append({"role": "assistant", "content": response_text})
+            logger.info(f"🧠 SESSION {session_id}: Added assistant response. Context length: {len(session['conversation_context'])}")
+            logger.info(f"🧠 SESSION {session_id}: Assistant said: '{response_text[:50]}{'...' if len(response_text) > 50 else ''}')")
 
             await websocket.send_json({"type": "response", "text": response_text})
             await websocket.send_json({"type": "processing_status", "status": "speaking"})
