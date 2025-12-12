@@ -262,10 +262,12 @@ class DemoVoiceHandler:
             logger.info(f"💬 LLaMA: {response_text}")
 
             await websocket.send_json({"type": "response", "text": response_text})
-            await websocket.send_json({"type": "processing_status", "status": "speaking"})
 
-            # Mark assistant as speaking (for interruption detection)
+            # Mark assistant as speaking IMMEDIATELY (for interruption detection)
             session["assistant_speaking"] = True
+            logger.info("🔊 Assistant now speaking - interruption detection ACTIVE")
+
+            await websocket.send_json({"type": "processing_status", "status": "speaking"})
 
             # 3. TTS
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session_http:
