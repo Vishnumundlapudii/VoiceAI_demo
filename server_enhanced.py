@@ -48,6 +48,10 @@ class EnhancedVoiceHandler:
         # Session management
         self.active_sessions: Dict[str, dict] = {}
 
+        # Warmup tracking
+        self.models_warmed_up = False
+        self.warmup_in_progress = False
+
         logger.info("✅ Enhanced Voice Handler initialized with VAD")
 
     async def handle_connection(self, websocket: WebSocket):
@@ -665,6 +669,19 @@ async def health():
         ]
     }
 
+async def startup_warmup():
+    """Optional startup warmup"""
+    import os
+    if os.getenv("WARMUP_ON_START", "false").lower() == "true":
+        logger.info("🔥 Starting model warmup...")
+        try:
+            from warmup_models import ModelWarmer
+            warmer = ModelWarmer()
+            await warmer.warmup_all()
+            logger.info("🎉 Startup warmup completed!")
+        except Exception as e:
+            logger.warning(f"⚠️ Startup warmup failed: {e}")
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -675,6 +692,7 @@ if __name__ == "__main__":
     logger.info("✅ Audio Buffering - Smart audio processing")
     logger.info("✅ Conversation Context - Remembers chat history")
     logger.info("✅ Direct API - Your working E2E endpoints")
+    logger.info("💡 TIP: Run 'python3 prepare_demo.py' to warm up models!")
     logger.info("=" * 50)
 
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
