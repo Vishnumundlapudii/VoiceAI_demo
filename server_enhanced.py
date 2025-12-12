@@ -172,18 +172,18 @@ class EnhancedVoiceHandler:
 
             speech_ratio = speech_energy / (total_energy + 1e-10)
 
-            # FIXED: Balanced thresholds to prevent false positives from background noise
+            # BALANCED: Detect real speech but prevent background noise false positives
             if assistant_speaking:
-                # Sensitive during interruption but not too much
-                energy_threshold = 0.015  # Increased from 0.005
-                zcr_min, zcr_max = 0.05, 0.6  # Tighter range
-                speech_ratio_threshold = 0.3  # Increased from 0.2
+                # Sensitive during interruption
+                energy_threshold = 0.012  # Moderately sensitive
+                zcr_min, zcr_max = 0.06, 0.6  # Reasonable range
+                speech_ratio_threshold = 0.3  # Moderate threshold
                 logger.debug(f"🎤 Interruption Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
             else:
-                # Balanced normal speech detection - prevent false triggers
-                energy_threshold = 0.025  # Significantly increased from 0.010
-                zcr_min, zcr_max = 0.08, 0.5  # Much tighter range
-                speech_ratio_threshold = 0.35  # Increased from 0.25
+                # Balanced normal speech detection - catch speech but not noise
+                energy_threshold = 0.018  # Higher than background noise but catches speech
+                zcr_min, zcr_max = 0.08, 0.5  # Reasonable speech range
+                speech_ratio_threshold = 0.35  # Moderate speech content threshold
                 logger.debug(f"🎤 Normal Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
 
             # Combine multiple indicators
@@ -191,13 +191,20 @@ class EnhancedVoiceHandler:
             zcr_speech = zcr_min < zcr < zcr_max  # Speech has moderate ZCR
             spectral_speech = speech_ratio > speech_ratio_threshold
 
-            # FIXED: Require ALL 3 indicators to agree to prevent false positives
+            # BALANCED: Require 2 out of 3 indicators to agree for reliable detection
             speech_indicators = [energy_speech, zcr_speech, spectral_speech]
-            speech_detected = sum(speech_indicators) >= 3  # All must agree
+            speech_detected = sum(speech_indicators) >= 2  # 2 out of 3 must agree
+
+            # Debug: Show exactly what's being detected
+            indicator_count = sum(speech_indicators)
+            if indicator_count > 0:
+                logger.debug(f"🔍 Indicators: E={energy_speech}, Z={zcr_speech}, S={spectral_speech} ({indicator_count}/3)")
 
             if speech_detected:
                 confidence = sum(speech_indicators) / 3.0
                 logger.debug(f"✅ Speech detected - Confidence: {confidence:.2f}")
+            elif indicator_count > 0:
+                logger.debug(f"🤏 Close but no speech ({indicator_count}/3 indicators)")
 
                 if assistant_speaking:
                     logger.info(f"🛑 INTERRUPTION DETECTED! Confidence: {confidence:.2f}")
