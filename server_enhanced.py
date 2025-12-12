@@ -350,6 +350,8 @@ class EnhancedVoiceHandler:
                             # Glow-TTS returns JSON with base64 encoded audio
                             json_response = await tts_response.json()
                             logger.info(f"🎵 Glow-TTS Response received")
+                            logger.info(f"🎵 Response keys: {list(json_response.keys())}")
+                            logger.info(f"🎵 Response preview: {str(json_response)[:200]}")
 
                             # Extract audio from JSON response
                             if 'audio' in json_response:
