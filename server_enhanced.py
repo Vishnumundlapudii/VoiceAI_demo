@@ -13,18 +13,13 @@ from fastapi.responses import JSONResponse
 # -------------------------------------------------------------------
 # Config import from clean_config.py (using your existing .env)
 # -------------------------------------------------------------------
-try:
-    from clean_config import WHISPER_API, TTS_API, LLAMA_BASE_URL, E2E_TOKEN, LLAMA_MODEL  # type: ignore
-except ImportError:
-    # If you are using a `settings` object instead:
-    from clean_config import settings  # type: ignore
-
-    WHISPER_API = settings.WHISPER_API
-    TTS_API = settings.TTS_API
-    LLAMA_BASE_URL = settings.LLAMA_BASE_URL
-    E2E_TOKEN = settings.E2E_TOKEN
-    LLAMA_MODEL = settings.LLAMA_MODEL
-
+from config_clean import (
+    WHISPER_API,
+    TTS_API,
+    LLAMA_BASE_URL,
+    E2E_TOKEN,
+    LLAMA_MODEL
+)
 # -------------------------------------------------------------------
 # Logging setup
 # -------------------------------------------------------------------
