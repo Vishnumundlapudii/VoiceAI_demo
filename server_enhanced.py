@@ -341,7 +341,10 @@ class EnhancedVoiceHandler:
                 logger.info(f"🎵 Calling Glow-TTS server: {glow_tts_url}")
                 logger.info(f"🎵 TTS Input: {response_text[:50]}...")
 
-                async with aio_session.post(glow_tts_url, json=payload, headers=headers, timeout=30) as tts_response:
+                # Set shorter timeout and better error handling
+                timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+                async with aio_session.post(glow_tts_url, json=payload, headers=headers, timeout=timeout) as tts_response:
+                    logger.info(f"🎵 Glow-TTS response status: {tts_response.status}")
                     if tts_response.status == 200:
                         try:
                             # Glow-TTS returns JSON with base64 encoded audio
@@ -402,8 +405,17 @@ class EnhancedVoiceHandler:
                 session['interrupted'] = False
                 logger.info("🛑 Assistant finished after interruption")
 
+        except asyncio.TimeoutError:
+            logger.error("❌ Glow-TTS request timeout - server took too long to respond")
+            session['assistant_speaking'] = False
+            await websocket.send_json({"type": "error", "text": "TTS timeout - please try again"})
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"❌ Cannot connect to Glow-TTS server: {e}")
+            session['assistant_speaking'] = False
+            await websocket.send_json({"type": "error", "text": "TTS server unavailable"})
         except Exception as e:
             logger.error(f"❌ Speech processing error: {e}")
+            session['assistant_speaking'] = False
             await websocket.send_json({"type": "error", "text": str(e)})
 
     async def process_legacy_audio(self, session_id: str, base64_audio: str):
