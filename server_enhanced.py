@@ -282,13 +282,17 @@ class EnhancedVoiceHandler:
         speech_start_time = session.get('speech_start_time', current_time)
         total_speech_duration = current_time - speech_start_time
 
-        # Use adaptive threshold based on speech length
-        # Longer speeches need longer pauses to confirm end
-        if total_speech_duration > 3.0:
-            # For longer speeches, require longer silence
+        # LATENCY OPTIMIZED: Smart adaptive thresholds
+        if total_speech_duration > 4.0:
+            # Very long speeches - be patient
             required_silence = config.END_OF_SPEECH_THRESHOLD * 1.5
-        else:
+        elif total_speech_duration > 2.0:
+            # Medium speeches - normal threshold
             required_silence = config.END_OF_SPEECH_THRESHOLD
+        else:
+            # SHORT PHRASES - ULTRA FAST for demos (greetings, short questions)
+            required_silence = config.FAST_MODE_THRESHOLD
+            logger.info(f"🚀 FAST MODE: Short phrase detected, using {required_silence}s threshold")
 
         # Also check for absolute timeout to prevent infinite recording
         if silence_duration >= required_silence or total_speech_duration > config.SPEECH_TIMEOUT_THRESHOLD:
@@ -335,6 +339,16 @@ class EnhancedVoiceHandler:
 
             logger.info(f"🎯 Processing {len(speech_audio)} bytes of speech")
 
+            # LATENCY OPTIMIZED: Minimal validation for speed
+            min_audio_samples = int(config.SAMPLE_RATE * 0.3)  # Reduced to 0.3 seconds
+            if len(speech_audio) < min_audio_samples * 2:  # 2 bytes per sample (16-bit)
+                logger.warning(f"⚠️ Audio too short: {len(speech_audio)} bytes, skipping transcription")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Please speak a bit longer"
+                })
+                return
+
             # Convert raw audio to proper WAV format
             wav_buffer = io.BytesIO()
             with wave.open(wav_buffer, 'wb') as wav_file:
@@ -345,14 +359,16 @@ class EnhancedVoiceHandler:
 
             wav_data = wav_buffer.getvalue()
             logger.info(f"🎵 Converted to WAV: {len(wav_data)} bytes (was {len(speech_audio)} raw bytes)")
+            logger.info(f"🎵 Audio duration: {len(speech_audio) / (config.SAMPLE_RATE * 2):.2f} seconds")
 
             await websocket.send_json({
                 "type": "processing_status",
                 "status": "transcribing"
             })
 
-            # 1. Transcribe with Whisper (your working approach)
-            async with aiohttp.ClientSession() as aio_session:
+            # 1. Transcribe with Whisper - LATENCY OPTIMIZED
+            timeout = aiohttp.ClientTimeout(total=5)  # Reduced from default
+            async with aiohttp.ClientSession(timeout=timeout) as aio_session:
                 data = aiohttp.FormData()
                 # Use the proper WAV data instead of raw audio
                 data.add_field('audio', wav_data, filename='recording.wav', content_type='audio/wav')
@@ -404,8 +420,8 @@ Guidelines:
                 model=config.LLAMA_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt}
-                ] + session['conversation_context'][-8:],  # Keep last 4 turns for better context
-                max_tokens=200,  # Increased for more complete responses
+                ] + session['conversation_context'][-6:],  # Reduced context for speed
+                max_tokens=100,  # REDUCED for faster generation
                 temperature=0.7,  # Balanced creativity
                 top_p=0.9,       # Focus on high-quality tokens
                 presence_penalty=0.1,  # Encourage new topics
@@ -439,8 +455,8 @@ Guidelines:
                 logger.info(f"🎵 Calling Glow-TTS server: {glow_tts_url}")
                 logger.info(f"🎵 TTS Input: {response_text[:50]}...")
 
-                # Set shorter timeout and better error handling
-                timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+                # LATENCY OPTIMIZED: Aggressive timeout
+                timeout = aiohttp.ClientTimeout(total=6)  # Reduced to 6 seconds
                 async with aio_session.post(glow_tts_url, json=payload, headers=headers, timeout=timeout) as tts_response:
                     logger.info(f"🎵 Glow-TTS response status: {tts_response.status}")
                     if tts_response.status == 200:
