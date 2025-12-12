@@ -134,10 +134,9 @@ class EnhancedVoiceHandler:
             logger.error(f"❌ Audio chunk processing error: {e}")
 
     async def detect_speech(self, audio_frame: AudioRawFrame, assistant_speaking: bool = False) -> bool:
-        """Enhanced VAD with adaptive thresholds and noise filtering"""
+        """SIMPLE RELIABLE VAD - just energy detection like clean server"""
         try:
             import numpy as np
-            import scipy.signal
 
             # Convert bytes to numpy array
             audio_np = np.frombuffer(audio_frame.audio, dtype=np.int16)
@@ -145,57 +144,17 @@ class EnhancedVoiceHandler:
             if len(audio_np) == 0:
                 return False
 
-            # Convert to float and normalize
-            audio_float = audio_np.astype(np.float32) / 32768.0
-
-            # Apply high-pass filter to remove low-frequency noise
-            nyquist = config.SAMPLE_RATE / 2
-            cutoff = 100  # Hz - remove low frequency rumble
-            b, a = scipy.signal.butter(2, cutoff / nyquist, btype='high')
-            filtered_audio = scipy.signal.filtfilt(b, a, audio_float)
-
-            # Multiple detection methods for robustness
-
-            # 1. Energy-based detection
-            energy = np.sqrt(np.mean(filtered_audio ** 2))
-
-            # 2. Zero-crossing rate (helps distinguish speech from noise)
-            zcr = np.mean(np.diff(np.sign(filtered_audio)) != 0)
-
-            # 3. Spectral features
-            fft = np.fft.fft(filtered_audio)
-            magnitude = np.abs(fft[:len(fft)//2])
-
-            # Focus on speech frequency range (300-3400 Hz)
-            freqs = np.fft.fftfreq(len(filtered_audio), 1/config.SAMPLE_RATE)[:len(fft)//2]
-            speech_band = (freqs >= 300) & (freqs <= 3400)
-            speech_energy = np.sum(magnitude[speech_band])
-            total_energy = np.sum(magnitude)
-
-            speech_ratio = speech_energy / (total_energy + 1e-10)
-
-            # SIMPLE RELIABLE VAD: Use unified config energy threshold
-            # Convert energy to match config scale (energy is 0-1, config expects larger values)
-            audio_np = np.frombuffer(audio_frame.audio, dtype=np.int16)
+            # SIMPLE RELIABLE VAD - EXACTLY like the clean server
             energy_raw = np.mean(audio_np.astype(np.float64) ** 2)
 
             # Simple, reliable speech detection using unified config
             speech_detected = energy_raw > config.VAD_ENERGY_THRESHOLD
 
-            # TEMP: Log energy levels to debug threshold
-            if energy_raw > 1000000:  # Only log significant energy
-                logger.info(f"🔊 Energy: {energy_raw:.0f}, Threshold: {config.VAD_ENERGY_THRESHOLD:.0f}, Detected: {speech_detected}")
-
             if speech_detected:
-                logger.info(f"✅ Speech detected - Energy: {energy_raw:.0f} > {config.VAD_ENERGY_THRESHOLD:.0f}")
-            else:
-                # Check if we have ongoing speech that should end
-                session = self.active_sessions.get(id(websocket)) if hasattr(self, 'active_sessions') else None
-                if session and session.get('is_speaking'):
-                    logger.info(f"🤫 No speech - Energy: {energy_raw:.0f} < {config.VAD_ENERGY_THRESHOLD:.0f} (should end speech)")
+                logger.debug(f"✅ Speech detected - Energy: {energy_raw:.0f}")
 
             if assistant_speaking and speech_detected:
-                logger.info(f"🛑 INTERRUPTION DETECTED! Energy: {energy_raw:.0f}")
+                logger.info(f"🛑 INTERRUPTION DETECTED!")
 
             return speech_detected
 
@@ -499,7 +458,7 @@ class EnhancedVoiceHandler:
             # 3. Convert to speech with Glow-TTS (high quality local server)
             async with aiohttp.ClientSession() as aio_session:
                 # Use Glow-TTS server for better quality
-                glow_tts_url = "http://216.48.191.105:8000/v1/audio/speech"
+                glow_tts_url = config.TTS_API
                 payload = {
                     "input": response_text
                 }
@@ -512,7 +471,7 @@ class EnhancedVoiceHandler:
                 logger.info(f"🎵 TTS Input: {response_text[:50]}...")
 
                 # REASONABLE TTS timeout
-                timeout = aiohttp.ClientTimeout(total=5)  # 5 seconds for TTS
+                timeout = aiohttp.ClientTimeout(total=config.TTS_TIMEOUT)
                 async with aio_session.post(glow_tts_url, json=payload, headers=headers, timeout=timeout) as tts_response:
                     logger.info(f"🎵 Glow-TTS response status: {tts_response.status}")
                     if tts_response.status == 200:
