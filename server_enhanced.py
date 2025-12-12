@@ -105,6 +105,9 @@ class EnhancedVoiceHandler:
         if not session:
             return
 
+        # DEBUG: Log that audio is being received
+        logger.info(f"🎵 AUDIO CHUNK RECEIVED - Session: {session_id}, Size: {len(base64_audio)} bytes")
+
         try:
             # Decode audio
             audio_bytes = base64.b64decode(base64_audio)
