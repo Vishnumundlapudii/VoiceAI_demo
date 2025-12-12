@@ -35,7 +35,7 @@ AUDIO_BIT_DEPTH = 16       # 16-bit audio
 VAD_ENERGY_THRESHOLD = 3000000      # Set below your actual speech energy
 
 # Speech timing parameters
-END_OF_SPEECH_THRESHOLD = 1.5       # Seconds of silence before processing speech
+END_OF_SPEECH_THRESHOLD = 2.5       # More time to finish speaking before processing
 SPEECH_TIMEOUT_THRESHOLD = 15.0     # Max speech duration before timeout
 
 # Minimum audio requirements
