@@ -105,8 +105,7 @@ class EnhancedVoiceHandler:
         if not session:
             return
 
-        # DEBUG: Log that audio is being received
-        logger.info(f"🎵 AUDIO CHUNK RECEIVED - Session: {session_id}, Size: {len(base64_audio)} bytes")
+        # Audio chunk received (debug removed to reduce noise)
 
         try:
             # Decode audio
@@ -183,8 +182,12 @@ class EnhancedVoiceHandler:
             # Simple, reliable speech detection using unified config
             speech_detected = energy_raw > config.VAD_ENERGY_THRESHOLD
 
+            # TEMP: Log energy levels to debug threshold
+            if energy_raw > 1000000:  # Only log significant energy
+                logger.info(f"🔊 Energy: {energy_raw:.0f}, Threshold: {config.VAD_ENERGY_THRESHOLD:.0f}, Detected: {speech_detected}")
+
             if speech_detected:
-                logger.debug(f"✅ Speech detected - Energy: {energy_raw:.0f} > {config.VAD_ENERGY_THRESHOLD:.0f}")
+                logger.info(f"✅ Speech detected - Energy: {energy_raw:.0f} > {config.VAD_ENERGY_THRESHOLD:.0f}")
 
             if assistant_speaking and speech_detected:
                 logger.info(f"🛑 INTERRUPTION DETECTED! Energy: {energy_raw:.0f}")
