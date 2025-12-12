@@ -1,6 +1,7 @@
 import base64
 import io
 import logging
+import os
 import wave
 from typing import Optional
 
@@ -8,18 +9,19 @@ import numpy as np
 import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
 # -------------------------------------------------------------------
-# Config import from clean_config.py (using your existing .env)
+# Config import from config_clean.py (using your existing .env)
 # -------------------------------------------------------------------
 from config_clean import (
     WHISPER_API,
     TTS_API,
     LLAMA_BASE_URL,
     E2E_TOKEN,
-    LLAMA_MODEL
+    LLAMA_MODEL,
 )
+
 # -------------------------------------------------------------------
 # Logging setup
 # -------------------------------------------------------------------
@@ -46,11 +48,36 @@ app.add_middleware(
 )
 
 # -------------------------------------------------------------------
+# Serve UI (index_enhanced.html / index.html) at `/`
+# -------------------------------------------------------------------
+
+
+@app.get("/")
+def serve_ui():
+    """
+    Serve the UI HTML directly from the backend so that
+    opening the ngrok URL shows the UI page like before.
+    """
+    # Try index_enhanced.html first, then index.html
+    for name in ["index_enhanced.html", "index.html"]:
+        if os.path.exists(name):
+            return FileResponse(name)
+
+    # If nothing found, show a clear message
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "UI file not found (index_enhanced.html / index.html)."},
+    )
+
+
+# -------------------------------------------------------------------
 # Simple VAD (energy-based, tuned for 16 kHz audio)
 # -------------------------------------------------------------------
 
 
-def wav_bytes_to_float_mono(audio_bytes: bytes, expected_rate: int = 16000) -> Optional[np.ndarray]:
+def wav_bytes_to_float_mono(
+    audio_bytes: bytes, expected_rate: int = 16000
+) -> Optional[np.ndarray]:
     """
     Decode WAV bytes to a mono float32 numpy array in [-1, 1].
     Assumes 16-bit PCM. If anything is off, returns None.
@@ -71,7 +98,9 @@ def wav_bytes_to_float_mono(audio_bytes: bytes, expected_rate: int = 16000) -> O
 
             # Read raw PCM
             pcm_data = wf.readframes(n_frames)
-            audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            audio = (
+                np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            )
 
             # If stereo, convert to mono
             if n_channels == 2:
@@ -147,7 +176,9 @@ def call_whisper(audio_bytes: bytes) -> Optional[str]:
         data = resp.json()
         if "text" in data:
             text = data["text"]
-        elif "result" in data and isinstance(data["result"], dict) and "text" in data["result"]:
+        elif "result" in data and isinstance(data["result"], dict) and "text" in data[
+            "result"
+        ]:
             text = data["result"]["text"]
         else:
             logger.error(f"Unexpected Whisper response format: {data}")
@@ -283,7 +314,9 @@ async def voice_query(audio: UploadFile = File(...)):
         # --- Step 1: local VAD before hitting Whisper ---
         float_audio = wav_bytes_to_float_mono(audio_bytes, expected_rate=16000)
         if float_audio is None:
-            logger.warning("Could not decode audio for VAD; falling back to Whisper only.")
+            logger.warning(
+                "Could not decode audio for VAD; falling back to Whisper only."
+            )
         else:
             has_speech = simple_vad(float_audio)
             if not has_speech:
@@ -310,7 +343,9 @@ async def voice_query(audio: UploadFile = File(...)):
 
         # Very short 'hmm', 'uh', etc. -> also skip
         if len(transcript.split()) < 2 and len(transcript) < 6:
-            logger.info(f"Transcript too short ('{transcript}'); treating as no speech.")
+            logger.info(
+                f"Transcript too short ('{transcript}'); treating as no speech."
+            )
             return JSONResponse(
                 status_code=200,
                 content={
@@ -323,12 +358,16 @@ async def voice_query(audio: UploadFile = File(...)):
         # --- Step 3: LLaMA reply ---
         reply_text = call_llama(transcript)
         if not reply_text:
-            raise HTTPException(status_code=502, detail="LLM error while generating response.")
+            raise HTTPException(
+                status_code=502, detail="LLM error while generating response."
+            )
 
         # --- Step 4: TTS ---
         tts_audio = call_tts(reply_text)
         if not tts_audio:
-            raise HTTPException(status_code=502, detail="TTS error while generating speech.")
+            raise HTTPException(
+                status_code=502, detail="TTS error while generating speech."
+            )
 
         audio_b64 = base64.b64encode(tts_audio).decode("utf-8")
 
@@ -347,7 +386,7 @@ async def voice_query(audio: UploadFile = File(...)):
 
 
 # -------------------------------------------------------------------
-# Health check (optional, but nice for debugging)
+# Health check
 # -------------------------------------------------------------------
 
 
