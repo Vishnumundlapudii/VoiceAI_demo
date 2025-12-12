@@ -188,6 +188,11 @@ class EnhancedVoiceHandler:
 
             if speech_detected:
                 logger.info(f"✅ Speech detected - Energy: {energy_raw:.0f} > {config.VAD_ENERGY_THRESHOLD:.0f}")
+            else:
+                # Check if we have ongoing speech that should end
+                session = self.active_sessions.get(id(websocket)) if hasattr(self, 'active_sessions') else None
+                if session and session.get('is_speaking'):
+                    logger.info(f"🤫 No speech - Energy: {energy_raw:.0f} < {config.VAD_ENERGY_THRESHOLD:.0f} (should end speech)")
 
             if assistant_speaking and speech_detected:
                 logger.info(f"🛑 INTERRUPTION DETECTED! Energy: {energy_raw:.0f}")
