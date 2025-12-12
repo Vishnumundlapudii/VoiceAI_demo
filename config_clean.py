@@ -32,7 +32,7 @@ AUDIO_BIT_DEPTH = 16       # 16-bit audio
 # =============================================================================
 
 # Simple VAD energy threshold - the core parameter for speech detection
-VAD_ENERGY_THRESHOLD = 300000000    # Speak clearly and loudly for detection
+VAD_ENERGY_THRESHOLD = 50000000     # More sensitive - easier detection
 
 # Speech timing parameters
 END_OF_SPEECH_THRESHOLD = 1.5       # Seconds of silence before processing speech
