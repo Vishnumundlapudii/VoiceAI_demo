@@ -326,77 +326,67 @@ class EnhancedVoiceHandler:
             # Mark assistant as speaking (for interruption detection)
             session['assistant_speaking'] = True
 
-            # 3. Convert to speech with TTS (your working approach)
+            # 3. Convert to speech with Glow-TTS (high quality local server)
             async with aiohttp.ClientSession() as aio_session:
+                # Use Glow-TTS server for better quality
+                glow_tts_url = "http://216.48.191.105:8001/v1/audio/speech"
                 payload = {
-                    "model": "tts-1-hd",  # Use HD model for better quality
-                    "input": response_text,
-                    "voice": "echo",      # Try echo - male voice, very clear
-                    "speed": 0.85         # Slightly slower for clarity
+                    "input": response_text
                 }
 
                 headers = {
-                    "Authorization": f"Bearer {config.E2E_TOKEN}",
                     "Content-Type": "application/json"
                 }
 
-                async with aio_session.post(config.TTS_API, json=payload, headers=headers) as tts_response:
+                logger.info(f"🎵 Calling Glow-TTS server: {glow_tts_url}")
+                logger.info(f"🎵 TTS Input: {response_text[:50]}...")
+
+                async with aio_session.post(glow_tts_url, json=payload, headers=headers, timeout=30) as tts_response:
                     if tts_response.status == 200:
-                        # Get response headers to understand the format
-                        content_type = tts_response.headers.get('content-type', 'unknown')
-                        logger.info(f"🎵 TTS Response Content-Type: {content_type}")
+                        try:
+                            # Glow-TTS returns JSON with base64 encoded audio
+                            json_response = await tts_response.json()
+                            logger.info(f"🎵 Glow-TTS Response received")
 
-                        audio_data = await tts_response.read()
-                        logger.info(f"🎵 Received audio data: {len(audio_data)} bytes")
+                            # Extract audio from JSON response
+                            if 'audio' in json_response:
+                                audio_b64_from_api = json_response['audio']
+                                logger.info(f"🎵 Extracted base64 audio from Glow-TTS: {len(audio_b64_from_api)} chars")
 
-                        # If it's JSON, parse it to see the actual response
-                        if content_type == 'application/json':
-                            try:
-                                json_response = json.loads(audio_data.decode('utf-8'))
-                                logger.info(f"🎵 TTS JSON Response: {json_response}")
+                                # Decode base64 to get WAV audio data
+                                audio_data = base64.b64decode(audio_b64_from_api)
+                                content_type = 'audio/wav'  # Glow-TTS returns WAV format
+                                logger.info(f"🎵 Decoded WAV audio: {len(audio_data)} bytes")
 
-                                # Check if audio data is in the JSON response
-                                if 'audio' in json_response:
-                                    # Audio is base64 encoded in JSON
-                                    audio_b64_from_api = json_response['audio']
-                                    audio_data = base64.b64decode(audio_b64_from_api)
-                                    content_type = 'audio/mpeg'  # Override content type
-                                    logger.info(f"🎵 Extracted audio from JSON: {len(audio_data)} bytes")
-                                elif 'data' in json_response:
-                                    # Alternative field name
-                                    audio_b64_from_api = json_response['data']
-                                    audio_data = base64.b64decode(audio_b64_from_api)
-                                    content_type = 'audio/mpeg'  # Override content type
-                                    logger.info(f"🎵 Extracted audio from JSON (data field): {len(audio_data)} bytes")
+                                # Check if we got valid audio data and not interrupted
+                                if audio_data and len(audio_data) > 100 and not session.get('interrupted', False):
+                                    # Send audio directly as base64 (already encoded from API)
+                                    await websocket.send_json({
+                                        "type": "audio_response",
+                                        "data": audio_b64_from_api,  # Use original base64 from API
+                                        "content_type": content_type,
+                                        "size": len(audio_data),
+                                        "format": "wav_22050_16bit_mono"
+                                    })
+                                    logger.info(f"🔊 Glow-TTS audio response sent: {len(audio_data)} bytes, format: WAV")
                                 else:
-                                    logger.error(f"❌ No audio data found in JSON response: {list(json_response.keys())}")
-                                    await websocket.send_json({"type": "error", "text": "TTS returned JSON without audio data"})
-                                    return
-                            except Exception as e:
-                                logger.error(f"❌ Failed to parse TTS JSON response: {e}")
-                                # Show first 200 chars of response for debugging
-                                response_preview = audio_data.decode('utf-8', errors='ignore')[:200]
-                                logger.error(f"❌ Response preview: {response_preview}")
-                                await websocket.send_json({"type": "error", "text": "TTS returned invalid JSON"})
-                                return
+                                    if session.get('interrupted', False):
+                                        logger.info("🛑 Skipping audio send - user interrupted")
+                                    else:
+                                        logger.error(f"❌ Invalid audio data: {len(audio_data) if audio_data else 0} bytes")
+                                        await websocket.send_json({"type": "error", "text": "Invalid audio data from Glow-TTS"})
+                            else:
+                                logger.error(f"❌ No 'audio' field in Glow-TTS response: {list(json_response.keys())}")
+                                await websocket.send_json({"type": "error", "text": "Glow-TTS returned response without audio field"})
 
-                        # Check if we got valid audio data
-                        if audio_data and len(audio_data) > 100 and not session.get('interrupted', False):
-                            # Check audio format by looking at header bytes
-                            audio_header = audio_data[:12]
-                            logger.info(f"🎵 Audio header bytes: {audio_header[:4]}")
-
-                            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                            await websocket.send_json({
-                                "type": "audio_response",
-                                "data": audio_b64,
-                                "content_type": content_type,
-                                "size": len(audio_data)
-                            })
-                            logger.info(f"🔊 Audio response sent: {len(audio_data)} bytes, type: {content_type}")
-                        else:
-                            logger.error(f"❌ Invalid audio data: {len(audio_data) if audio_data else 0} bytes")
-                            await websocket.send_json({"type": "error", "text": "Invalid audio data received"})
+                        except json.JSONDecodeError as e:
+                            logger.error(f"❌ Failed to parse Glow-TTS JSON response: {e}")
+                            response_text = await tts_response.text()
+                            logger.error(f"❌ Response preview: {response_text[:200]}")
+                            await websocket.send_json({"type": "error", "text": "Glow-TTS returned invalid JSON"})
+                        except Exception as e:
+                            logger.error(f"❌ Glow-TTS processing error: {e}")
+                            await websocket.send_json({"type": "error", "text": f"Glow-TTS error: {str(e)}"})
                     else:
                         error_text = await tts_response.text()
                         logger.error(f"❌ TTS API error {tts_response.status}: {error_text}")
