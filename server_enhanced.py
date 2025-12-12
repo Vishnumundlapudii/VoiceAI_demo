@@ -282,17 +282,14 @@ class EnhancedVoiceHandler:
         speech_start_time = session.get('speech_start_time', current_time)
         total_speech_duration = current_time - speech_start_time
 
-        # LATENCY OPTIMIZED: Smart adaptive thresholds
-        if total_speech_duration > 4.0:
-            # Very long speeches - be patient
-            required_silence = config.END_OF_SPEECH_THRESHOLD * 1.5
-        elif total_speech_duration > 2.0:
-            # Medium speeches - normal threshold
-            required_silence = config.END_OF_SPEECH_THRESHOLD
+        # SAFER: Conservative adaptive thresholds
+        if total_speech_duration > 3.0:
+            # Long speeches - be patient
+            required_silence = config.END_OF_SPEECH_THRESHOLD * 1.3
         else:
-            # SHORT PHRASES - ULTRA FAST for demos (greetings, short questions)
-            required_silence = config.FAST_MODE_THRESHOLD
-            logger.info(f"🚀 FAST MODE: Short phrase detected, using {required_silence}s threshold")
+            # Short to medium phrases - use standard threshold
+            required_silence = config.END_OF_SPEECH_THRESHOLD
+            logger.info(f"📝 Standard timing: Using {required_silence}s threshold")
 
         # Also check for absolute timeout to prevent infinite recording
         if silence_duration >= required_silence or total_speech_duration > config.SPEECH_TIMEOUT_THRESHOLD:
@@ -320,14 +317,22 @@ class EnhancedVoiceHandler:
         if not session:
             return
 
-        # Skip processing if we're currently interrupted or assistant is already speaking
+        # Enhanced session state checking
         if session.get('interrupted', False):
             logger.info("🛑 Skipping speech processing - assistant was interrupted")
+            session['interrupted'] = False  # Reset flag
             return
 
         if session.get('assistant_speaking', False):
             logger.info("🛑 Skipping speech processing - assistant is already speaking")
             return
+
+        # Prevent concurrent processing
+        if session.get('processing', False):
+            logger.info("🛑 Skipping speech processing - already processing another request")
+            return
+
+        session['processing'] = True  # Set processing flag
 
         websocket = session['websocket']
 
@@ -339,8 +344,8 @@ class EnhancedVoiceHandler:
 
             logger.info(f"🎯 Processing {len(speech_audio)} bytes of speech")
 
-            # LATENCY OPTIMIZED: Minimal validation for speed
-            min_audio_samples = int(config.SAMPLE_RATE * 0.3)  # Reduced to 0.3 seconds
+            # SAFER: More conservative validation
+            min_audio_samples = int(config.SAMPLE_RATE * 0.5)  # Back to 0.5 seconds
             if len(speech_audio) < min_audio_samples * 2:  # 2 bytes per sample (16-bit)
                 logger.warning(f"⚠️ Audio too short: {len(speech_audio)} bytes, skipping transcription")
                 await websocket.send_json({
@@ -545,6 +550,9 @@ Guidelines:
             logger.error(f"❌ Speech processing error: {e}")
             session['assistant_speaking'] = False
             await websocket.send_json({"type": "error", "text": str(e)})
+        finally:
+            # Always reset processing flag
+            session['processing'] = False
 
     async def process_legacy_audio(self, session_id: str, base64_audio: str):
         """Support legacy push-to-talk mode"""
