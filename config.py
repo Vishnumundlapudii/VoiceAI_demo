@@ -24,11 +24,11 @@ LLAMA_MODEL = os.getenv("LLAMA_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
-# Pipeline Settings - BALANCED (Fixed)
-VAD_THRESHOLD = 0.3  # Lower threshold for better sensitivity
-END_OF_SPEECH_THRESHOLD = 1.5  # SAFER: Balanced timing
-SPEECH_TIMEOUT_THRESHOLD = 8.0  # Maximum continuous speech duration
-FAST_MODE_THRESHOLD = 1.2  # More conservative fast mode
+# Pipeline Settings - ACCURACY + SPEED BALANCE
+VAD_THRESHOLD = 0.4  # More sensitive to catch all speech
+END_OF_SPEECH_THRESHOLD = 1.5  # Balanced wait for complete speech
+SPEECH_TIMEOUT_THRESHOLD = 15.0  # Allow longer speeches
+FAST_MODE_THRESHOLD = 1.5  # Balanced mode
 
 # Display loaded configuration (for debugging)
 if __name__ == "__main__":

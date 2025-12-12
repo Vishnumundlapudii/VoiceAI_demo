@@ -168,19 +168,19 @@ class EnhancedVoiceHandler:
 
             speech_ratio = speech_energy / (total_energy + 1e-10)
 
-            # Adaptive thresholds
+            # ACCURACY FIRST: More sensitive thresholds to catch all speech
             if assistant_speaking:
                 # More sensitive during interruption
-                energy_threshold = 0.008
-                zcr_min, zcr_max = 0.05, 0.6
-                speech_ratio_threshold = 0.3
+                energy_threshold = 0.005  # Lower = more sensitive
+                zcr_min, zcr_max = 0.02, 0.8  # Wider range
+                speech_ratio_threshold = 0.2  # Lower = more sensitive
                 logger.debug(f"🎤 Interruption - Energy: {energy:.4f}, ZCR: {zcr:.3f}, SpeechRatio: {speech_ratio:.3f}")
             else:
-                # Normal speech detection
-                energy_threshold = 0.015
-                zcr_min, zcr_max = 0.08, 0.5
-                speech_ratio_threshold = 0.4
-                logger.debug(f"🎤 Normal VAD - Energy: {energy:.4f}, ZCR: {zcr:.3f}, SpeechRatio: {speech_ratio:.3f}")
+                # VERY SENSITIVE normal speech detection
+                energy_threshold = 0.010  # Lower = more sensitive
+                zcr_min, zcr_max = 0.05, 0.7  # Wider range
+                speech_ratio_threshold = 0.25  # Lower = more sensitive
+                logger.debug(f"🎤 SENSITIVE VAD - Energy: {energy:.4f}, ZCR: {zcr:.3f}, SpeechRatio: {speech_ratio:.3f}")
 
             # Combine multiple indicators
             energy_speech = energy > energy_threshold
@@ -264,9 +264,14 @@ class EnhancedVoiceHandler:
                 "message": "👂 Listening..."
             })
 
-        # Add to buffer
+        # Add to buffer with debugging
         session['audio_buffer'].extend(audio_bytes)
         session['last_speech_time'] = time.time()
+
+        # DEBUG: Log buffer size occasionally
+        buffer_size = len(session['audio_buffer'])
+        if buffer_size % 10000 == 0:  # Every 10KB
+            logger.debug(f"📊 Audio buffer: {buffer_size} bytes ({buffer_size / (config.SAMPLE_RATE * 2):.1f}s)")
 
     async def handle_no_speech(self, session_id: str):
         """Handle when no speech is detected with improved timing"""
@@ -282,14 +287,14 @@ class EnhancedVoiceHandler:
         speech_start_time = session.get('speech_start_time', current_time)
         total_speech_duration = current_time - speech_start_time
 
-        # SAFER: Conservative adaptive thresholds
-        if total_speech_duration > 3.0:
-            # Long speeches - be patient
-            required_silence = config.END_OF_SPEECH_THRESHOLD * 1.3
+        # BALANCED: Good accuracy with reasonable speed
+        if total_speech_duration > 4.0:
+            # Long speeches - be a bit more patient
+            required_silence = config.END_OF_SPEECH_THRESHOLD * 1.3  # ~2.0s
         else:
-            # Short to medium phrases - use standard threshold
-            required_silence = config.END_OF_SPEECH_THRESHOLD
-            logger.info(f"📝 Standard timing: Using {required_silence}s threshold")
+            # Normal speeches - balanced timing
+            required_silence = config.END_OF_SPEECH_THRESHOLD  # 1.5s
+            logger.info(f"⚖️ BALANCED MODE: Using {required_silence}s for complete speech")
 
         # Also check for absolute timeout to prevent infinite recording
         if silence_duration >= required_silence or total_speech_duration > config.SPEECH_TIMEOUT_THRESHOLD:
@@ -344,13 +349,13 @@ class EnhancedVoiceHandler:
 
             logger.info(f"🎯 Processing {len(speech_audio)} bytes of speech")
 
-            # SAFER: More conservative validation
-            min_audio_samples = int(config.SAMPLE_RATE * 0.5)  # Back to 0.5 seconds
+            # ACCURACY FIRST: Minimal validation - try to transcribe everything
+            min_audio_samples = int(config.SAMPLE_RATE * 0.1)  # Only 0.1 second minimum
             if len(speech_audio) < min_audio_samples * 2:  # 2 bytes per sample (16-bit)
-                logger.warning(f"⚠️ Audio too short: {len(speech_audio)} bytes, skipping transcription")
+                logger.warning(f"⚠️ Audio extremely short: {len(speech_audio)} bytes, skipping transcription")
                 await websocket.send_json({
                     "type": "error",
-                    "message": "Please speak a bit longer"
+                    "message": "No audio detected - please try again"
                 })
                 return
 
@@ -371,19 +376,31 @@ class EnhancedVoiceHandler:
                 "status": "transcribing"
             })
 
-            # 1. Transcribe with Whisper - LATENCY OPTIMIZED
-            timeout = aiohttp.ClientTimeout(total=5)  # Reduced from default
+            # 1. Transcribe with Whisper - ACCURACY FIRST (Patient)
+            timeout = aiohttp.ClientTimeout(total=15)  # Longer timeout for accuracy
             async with aiohttp.ClientSession(timeout=timeout) as aio_session:
                 data = aiohttp.FormData()
                 # Use the proper WAV data instead of raw audio
                 data.add_field('audio', wav_data, filename='recording.wav', content_type='audio/wav')
 
+                logger.info(f"🚀 Sending to Whisper: {config.WHISPER_API}")
+                logger.info(f"📦 Audio size: {len(wav_data)} bytes, duration: {len(speech_audio) / (config.SAMPLE_RATE * 2):.2f}s")
+
                 async with aio_session.post(config.WHISPER_API, data=data) as response:
+                    logger.info(f"📡 Whisper response status: {response.status}")
                     if response.status == 200:
                         result = await response.json()
                         text = result.get('text', '').strip()
-                        logger.info(f"📝 Whisper Success: {text}")
+                        logger.info(f"📝 Whisper Success: '{text}'")
                         logger.info(f"📝 Full Whisper response: {result}")
+
+                        # ACCURACY FIRST: Show whatever Whisper transcribed
+                        if not text:
+                            logger.warning(f"⚠️ Whisper returned empty text")
+                            text = "[No speech detected]"
+
+                        logger.info(f"✅ TRANSCRIPTION RESULT: '{text}'")
+
                     else:
                         error_text = await response.text()
                         logger.error(f"❌ Whisper API error {response.status}: {error_text}")
