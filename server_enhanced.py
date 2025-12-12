@@ -1,340 +1,375 @@
-import asyncio
 import base64
 import io
 import logging
-from typing import Optional, List
+import wave
+from typing import Optional
 
 import numpy as np
-import torch
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import requests
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from pydub import AudioSegment
-from TTS.api import TTS
+from fastapi.responses import JSONResponse
 
-# ---------------------------------------------------------------------
-# Basic config
-# ---------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Config import from clean_config.py (using your existing .env)
+# -------------------------------------------------------------------
+try:
+    from clean_config import WHISPER_API, TTS_API, LLAMA_BASE_URL, E2E_TOKEN, LLAMA_MODEL  # type: ignore
+except ImportError:
+    # If you are using a `settings` object instead:
+    from clean_config import settings  # type: ignore
 
-SAMPLE_RATE = 16000          # 🔴 Change this if your frontend uses a different rate
-MIN_TRANSCRIPT_CHARS = 3     # below this, ignore as noise/silence
-SILENCE_ENERGY_THRESHOLD = 500  # tweak if needed
-MAX_SILENCE_SECONDS = 15     # optional: reset conversation after long silence
+    WHISPER_API = settings.WHISPER_API
+    TTS_API = settings.TTS_API
+    LLAMA_BASE_URL = settings.LLAMA_BASE_URL
+    E2E_TOKEN = settings.E2E_TOKEN
+    LLAMA_MODEL = settings.LLAMA_MODEL
 
+# -------------------------------------------------------------------
+# Logging setup
+# -------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 logger = logging.getLogger("voice-backend")
 
-app = FastAPI(title="Voice Assistant Backend")
+# -------------------------------------------------------------------
+# FastAPI app
+# -------------------------------------------------------------------
+app = FastAPI(
+    title="Voice AI Backend with VAD",
+    description="Whisper + LLaMA + TTS with simple VAD and 'no speech' handling.",
+)
 
-# CORS – update allowed origins as needed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can restrict this
+    allow_origins=["*"],  # tighten later if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------
-# TTS Initialization (Glow-TTS)
-# ---------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Simple VAD (energy-based, tuned for 16 kHz audio)
+# -------------------------------------------------------------------
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-logger.info(f"🚀 Loading Glow-TTS on {device}")
-tts = TTS("tts_models/en/ljspeech/glow-tts").to(device)
-logger.info("✅ Glow-TTS ready!")
 
-# ---------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------
-
-class TTSRequest(BaseModel):
-    text: str
-
-class TTSSpeechResponse(BaseModel):
-    audio_base64: str
-    format: str = "mp3"
-
-class ChatTextRequest(BaseModel):
-    text: str
-    history: Optional[List[dict]] = None  # [{"role": "user"/"assistant", "content": "..."}, ...]
-
-class ChatResponse(BaseModel):
-    reply: str
-
-# ---------------------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------------------
-
-def is_silent_pcm16(audio_bytes: bytes, sample_rate: int) -> bool:
+def wav_bytes_to_float_mono(audio_bytes: bytes, expected_rate: int = 16000) -> Optional[np.ndarray]:
     """
-    Very simple silence detector based on average absolute amplitude.
+    Decode WAV bytes to a mono float32 numpy array in [-1, 1].
+    Assumes 16-bit PCM. If anything is off, returns None.
     """
-    if not audio_bytes:
-        return True
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+            sample_width = wf.getsampwidth()
+            n_channels = wf.getnchannels()
+            fr = wf.getframerate()
+            n_frames = wf.getnframes()
 
-    audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
-    if audio_np.size == 0:
-        return True
+            if sample_width != 2:
+                logger.warning(f"Unexpected sample width: {sample_width * 8} bits")
+            if fr != expected_rate:
+                logger.warning(f"Unexpected sample rate: {fr}, expected {expected_rate}")
+            if n_channels not in (1, 2):
+                logger.warning(f"Unexpected channel count: {n_channels}")
 
-    energy = np.mean(np.abs(audio_np))
-    logger.debug(f"🔍 Audio energy: {energy:.2f}")
+            # Read raw PCM
+            pcm_data = wf.readframes(n_frames)
+            audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
 
-    return energy < SILENCE_ENERGY_THRESHOLD
+            # If stereo, convert to mono
+            if n_channels == 2:
+                audio = audio.reshape(-1, 2).mean(axis=1)
+
+            return audio
+    except Exception as e:
+        logger.exception(f"Failed to decode WAV bytes: {e}")
+        return None
 
 
-def generate_speech_mp3(text: str) -> bytes:
+def simple_vad(
+    audio: np.ndarray,
+    sample_rate: int = 16000,
+    frame_ms: int = 30,
+    energy_threshold: float = 0.0005,
+    min_voiced_ms: int = 300,
+) -> bool:
     """
-    Use Glow-TTS to generate waveform and encode as MP3.
+    Very simple energy-based VAD:
+    - Split signal into frames (e.g., 30 ms)
+    - Compute mean energy of each frame
+    - Count frames above threshold
+    - If total voiced duration >= min_voiced_ms -> speech present
     """
-    logger.info(f"🗣️ Generating TTS for text: {text[:80]!r}")
-    # TTS returns a 1D float32 numpy array at 22050 Hz by default
-    wav = tts.tts(text)
-    wav = np.asarray(wav, dtype=np.float32)
+    if audio is None or len(audio) == 0:
+        return False
 
-    # Normalise to int16 for pydub
-    wav_int16 = np.int16(wav / np.max(np.abs(wav)) * 32767)
+    frame_size = int(sample_rate * frame_ms / 1000)
+    if frame_size <= 0:
+        return False
 
-    # Convert to AudioSegment (assume 22050Hz mono)
-    audio_seg = AudioSegment(
-        wav_int16.tobytes(),
-        frame_rate=22050,
-        sample_width=2,
-        channels=1,
+    n_frames = len(audio) // frame_size
+    if n_frames == 0:
+        return False
+
+    audio = audio[: n_frames * frame_size]
+    frames = audio.reshape(n_frames, frame_size)
+    energies = np.mean(frames * frames, axis=1)
+
+    voiced_frames = energies > energy_threshold
+    voiced_ms = voiced_frames.sum() * frame_ms
+
+    logger.info(
+        f"VAD: total_frames={n_frames}, voiced_frames={voiced_frames.sum()}, "
+        f"voiced_ms={voiced_ms}, thresh={energy_threshold}"
     )
 
-    # Export as MP3 to bytes buffer
-    buf = io.BytesIO()
-    audio_seg.export(buf, format="mp3")
-    buf.seek(0)
-    mp3_bytes = buf.read()
-    logger.info(f"✅ TTS MP3 generated, {len(mp3_bytes)} bytes")
-    return mp3_bytes
+    return voiced_ms >= min_voiced_ms
 
 
-async def dummy_llm_reply(user_text: str, history: Optional[List[dict]] = None) -> str:
+# -------------------------------------------------------------------
+# API helpers (Whisper, LLaMA, TTS)
+# -------------------------------------------------------------------
+
+
+def call_whisper(audio_bytes: bytes) -> Optional[str]:
     """
-    Placeholder LLM. Replace this with your actual model call.
-    This function is where hallucinations could start if called on junk text.
+    Send raw audio bytes to the Whisper API and return transcript text.
+    Adjust the payload to whatever your Whisper endpoint expects.
     """
-    # Here you would call OpenAI / local LLM etc.
-    # Make sure to pass history if you want conversation context.
-    await asyncio.sleep(0.05)
-    return f"You said: {user_text}"
+    try:
+        logger.info("Sending audio to Whisper API...")
+        files = {
+            "file": ("audio.wav", audio_bytes, "audio/wav"),
+        }
+        resp = requests.post(WHISPER_API, files=files, timeout=60)
+
+        if resp.status_code != 200:
+            logger.error(f"Whisper API error: {resp.status_code} - {resp.text}")
+            return None
+
+        data = resp.json()
+        if "text" in data:
+            text = data["text"]
+        elif "result" in data and isinstance(data["result"], dict) and "text" in data["result"]:
+            text = data["result"]["text"]
+        else:
+            logger.error(f"Unexpected Whisper response format: {data}")
+            return None
+
+        text = (text or "").strip()
+        logger.info(f"Whisper transcript: {text}")
+        return text if text else None
+
+    except Exception as e:
+        logger.exception(f"Whisper call failed: {e}")
+        return None
 
 
-# ---------------------------------------------------------------------
-# REST Endpoints
-# ---------------------------------------------------------------------
+def call_llama(user_text: str) -> Optional[str]:
+    """
+    Call LLaMA using your existing infer endpoint.
+    Uses OpenAI-compatible /chat/completions shape.
+    """
+    try:
+        logger.info("Calling LLaMA for response...")
+
+        if LLAMA_BASE_URL.endswith("/chat/completions"):
+            url = LLAMA_BASE_URL
+        else:
+            url = f"{LLAMA_BASE_URL.rstrip('/')}/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {E2E_TOKEN}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": LLAMA_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful, concise voice assistant. "
+                        "Stay on the current topic and give short clear answers."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": user_text,
+                },
+            ],
+            "temperature": 0.4,
+            "max_tokens": 256,
+        }
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+
+        if resp.status_code != 200:
+            logger.error(f"LLaMA API error: {resp.status_code} - {resp.text}")
+            return None
+
+        data = resp.json()
+        try:
+            reply = data["choices"][0]["message"]["content"].strip()
+            logger.info(f"LLaMA reply: {reply}")
+            return reply
+        except Exception:
+            logger.error(f"Unexpected LLaMA response format: {data}")
+            return None
+
+    except Exception as e:
+        logger.exception(f"LLaMA call failed: {e}")
+        return None
+
+
+def call_tts(text: str) -> Optional[bytes]:
+    """
+    Call your existing TTS API:
+      POST TTS_API
+      Body: {"input": "<text>"}
+      Response: raw MP3 bytes
+    """
+    try:
+        logger.info("Calling TTS API...")
+        payload = {"input": text}
+        resp = requests.post(TTS_API, json=payload, timeout=60)
+
+        if resp.status_code != 200:
+            logger.error(f"TTS API error: {resp.status_code} - {resp.text}")
+            return None
+
+        audio_bytes = resp.content
+        logger.info(f"TTS audio size: {len(audio_bytes)} bytes")
+        return audio_bytes
+
+    except Exception as e:
+        logger.exception(f"TTS call failed: {e}")
+        return None
+
+
+# -------------------------------------------------------------------
+# Main endpoint with VAD + "no speech" guard
+# -------------------------------------------------------------------
+
+
+@app.post("/v1/voice/query")
+async def voice_query(audio: UploadFile = File(...)):
+    """
+    Full pipeline with VAD:
+      1. Receive audio from UI
+      2. Decode WAV -> run VAD
+         - If no speech -> return {"status": "no_speech"} (UI can show [No speech detected])
+      3. Send audio to Whisper -> transcript
+         - If transcript is empty/too short -> also treat as no speech
+      4. Call LLaMA -> reply_text
+      5. Call TTS -> audio bytes
+      6. Return JSON:
+         {
+           "status": "ok",
+           "transcript": "...",
+           "reply_text": "...",
+           "audio_base64": "<mp3>"
+         }
+    """
+    try:
+        audio_bytes = await audio.read()
+        if not audio_bytes or len(audio_bytes) < 1000:
+            logger.warning("Received too little audio data.")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "no_speech",
+                    "message": "No speech detected in audio (too little data).",
+                },
+            )
+
+        # --- Step 1: local VAD before hitting Whisper ---
+        float_audio = wav_bytes_to_float_mono(audio_bytes, expected_rate=16000)
+        if float_audio is None:
+            logger.warning("Could not decode audio for VAD; falling back to Whisper only.")
+        else:
+            has_speech = simple_vad(float_audio)
+            if not has_speech:
+                logger.info("VAD says: no speech, skipping Whisper/LLM/TTS.")
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "no_speech",
+                        "message": "No speech detected by VAD.",
+                    },
+                )
+
+        # --- Step 2: Whisper STT ---
+        transcript = call_whisper(audio_bytes)
+        if not transcript:
+            logger.info("Whisper returned empty transcript; treating as no speech.")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "no_speech",
+                    "message": "Could not transcribe any speech.",
+                },
+            )
+
+        # Very short 'hmm', 'uh', etc. -> also skip
+        if len(transcript.split()) < 2 and len(transcript) < 6:
+            logger.info(f"Transcript too short ('{transcript}'); treating as no speech.")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "no_speech",
+                    "message": "Transcript too short, likely no real speech.",
+                    "transcript": transcript,
+                },
+            )
+
+        # --- Step 3: LLaMA reply ---
+        reply_text = call_llama(transcript)
+        if not reply_text:
+            raise HTTPException(status_code=502, detail="LLM error while generating response.")
+
+        # --- Step 4: TTS ---
+        tts_audio = call_tts(reply_text)
+        if not tts_audio:
+            raise HTTPException(status_code=502, detail="TTS error while generating speech.")
+
+        audio_b64 = base64.b64encode(tts_audio).decode("utf-8")
+
+        return {
+            "status": "ok",
+            "transcript": transcript,
+            "reply_text": reply_text,
+            "audio_base64": audio_b64,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error in /v1/voice/query: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error.")
+
+
+# -------------------------------------------------------------------
+# Health check (optional, but nice for debugging)
+# -------------------------------------------------------------------
+
 
 @app.get("/health")
-async def health():
+def health():
     return {"status": "ok"}
 
 
-@app.post("/v1/audio/speech", response_model=TTSSpeechResponse)
-async def tts_endpoint(req: TTSRequest):
-    """
-    Text → Glow-TTS → MP3 (base64).
-    """
-    text = (req.text or "").strip()
-    if not text:
-        return TTSSpeechResponse(audio_base64="", format="mp3")
-
-    mp3_bytes = generate_speech_mp3(text)
-    b64 = base64.b64encode(mp3_bytes).decode("utf-8")
-    return TTSSpeechResponse(audio_base64=b64, format="mp3")
-
-
-@app.post("/v1/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatTextRequest):
-    """
-    Simple text chat endpoint using dummy LLM.
-    This shares the same guardrails as the voice flow.
-    """
-    text = (req.text or "").strip()
-
-    # Guard: ignore empty / extremely short input
-    if len(text) < MIN_TRANSCRIPT_CHARS:
-        logger.info("⚠️ Ignoring very short text input to avoid nonsense LLM calls.")
-        return ChatResponse(reply="")
-
-    reply = await dummy_llm_reply(text, req.history)
-    return ChatResponse(reply=reply)
-
-
-# ---------------------------------------------------------------------
-# WebSocket for voice conversation (template)
-# ---------------------------------------------------------------------
-# Protocol assumption:
-# - Client sends JSON messages:
-#   { "type": "audio", "audio_base64": "<...>" }  → single PCM16 chunk
-#   { "type": "end_utterance" }                  → finish current turn, run STT + LLM + TTS
-#   { "type": "reset" }                          → clear history
-#
-# - Server sends:
-#   { "type": "transcript", "text": "..." }
-#   { "type": "reply_text", "text": "..." }
-#   { "type": "reply_audio", "audio_base64": "<mp3>" }
-#   { "type": "info", "message": "..." }
-#
-# You can adapt this to match your real frontend exactly.
-# ---------------------------------------------------------------------
-
-class ConversationState:
-    def __init__(self):
-        self.buffers: List[bytes] = []
-        self.history: List[dict] = []
-        self.last_speech_ts: float = asyncio.get_event_loop().time()
-
-    def reset_audio(self):
-        self.buffers.clear()
-
-    def reset_all(self):
-        self.buffers.clear()
-        self.history.clear()
-
-    def append_audio(self, chunk: bytes):
-        self.buffers.append(chunk)
-        self.last_speech_ts = asyncio.get_event_loop().time()
-
-    def get_pcm(self) -> bytes:
-        if not self.buffers:
-            return b""
-        return b"".join(self.buffers)
-
-
-@app.websocket("/ws/voice")
-async def websocket_voice(ws: WebSocket):
-    """
-    Voice WebSocket with:
-    - silence detection
-    - transcript length guard
-    - optional history reset on long silence
-    - no random replies when no speech is detected
-    """
-    await ws.accept()
-    logger.info("🌐 Voice WebSocket connected")
-
-    state = ConversationState()
-
-    try:
-        while True:
-            msg = await ws.receive_json()
-            msg_type = msg.get("type")
-
-            # 1) Reset conversation explicitly from UI
-            if msg_type == "reset":
-                logger.info("🔁 Conversation reset requested from UI")
-                state.reset_all()
-                await ws.send_json({"type": "info", "message": "conversation_reset"})
-                continue
-
-            # 2) Audio chunk
-            if msg_type == "audio":
-                audio_b64 = msg.get("audio_base64", "")
-                if not audio_b64:
-                    continue
-
-                try:
-                    chunk = base64.b64decode(audio_b64)
-                except Exception as e:
-                    logger.warning(f"Failed to base64-decode audio chunk: {e}")
-                    continue
-
-                # Optional: quick silence check per chunk if you want to show "No speech detected" live
-                if is_silent_pcm16(chunk, SAMPLE_RATE):
-                    # You may or may not want to notify the UI here.
-                    await ws.send_json({"type": "info", "message": "no_speech_chunk"})
-                else:
-                    state.append_audio(chunk)
-
-                continue
-
-            # 3) End of utterance: run STT + LLM + TTS
-            if msg_type == "end_utterance":
-                full_pcm = state.get_pcm()
-                state.reset_audio()
-
-                # If no meaningful audio collected
-                if not full_pcm or is_silent_pcm16(full_pcm, SAMPLE_RATE):
-                    logger.info("⚠️ End utterance but no speech detected; skipping STT + LLM.")
-                    await ws.send_json({"type": "info", "message": "no_speech_detected"})
-                    # IMPORTANT: do NOT call LLM here → avoids random topic jumps
-                    continue
-
-                # -----------------------------------------------------------------
-                # TODO: Replace this with your Whisper / ASR call
-                # For now we simulate a transcript.
-                # -----------------------------------------------------------------
-                # Example if you use openai-whisper:
-                # import whisper
-                # model = whisper.load_model("small", device=device)
-                # audio_float = np.frombuffer(full_pcm, dtype=np.int16).astype(np.float32) / 32768.0
-                # result = model.transcribe(audio_float, language="en")
-                # transcript = (result.get("text") or "").strip()
-                # -----------------------------------------------------------------
-                transcript = "dummy transcript from audio"  # placeholder
-                logger.info(f"📝 Transcript: {transcript!r}")
-                await ws.send_json({"type": "transcript", "text": transcript})
-
-                # Guard: if transcript is too short/empty, DO NOT call LLM
-                if not transcript or len(transcript) < MIN_TRANSCRIPT_CHARS:
-                    logger.info("⚠️ Transcript too short; skipping LLM/TTS to avoid hallucinations.")
-                    await ws.send_json({"type": "info", "message": "transcript_too_short"})
-                    continue
-
-                # Build history for LLM
-                state.history.append({"role": "user", "content": transcript})
-
-                # Call LLM safely
-                reply_text = await dummy_llm_reply(transcript, state.history)
-                logger.info(f"🤖 LLM reply: {reply_text!r}")
-                state.history.append({"role": "assistant", "content": reply_text})
-
-                await ws.send_json({"type": "reply_text", "text": reply_text})
-
-                # TTS for reply
-                mp3_bytes = generate_speech_mp3(reply_text)
-                reply_audio_b64 = base64.b64encode(mp3_bytes).decode("utf-8")
-                await ws.send_json({"type": "reply_audio", "audio_base64": reply_audio_b64})
-
-                continue
-
-            # 4) Unknown message type
-            logger.warning(f"Unknown WebSocket message type: {msg_type!r}")
-            await ws.send_json({"type": "info", "message": f"unknown_type:{msg_type}"})
-
-            # 5) Optional: long silence → reset conversation
-            now = asyncio.get_event_loop().time()
-            if now - state.last_speech_ts > MAX_SILENCE_SECONDS and state.history:
-                logger.info("⏱️ Long silence detected, resetting conversation history.")
-                state.reset_all()
-                await ws.send_json({"type": "info", "message": "auto_reset_due_to_silence"})
-
-    except WebSocketDisconnect:
-        logger.info("🔌 Voice WebSocket disconnected")
-    except Exception as e:
-        logger.exception(f"WebSocket error: {e}")
-        try:
-            await ws.send_json({"type": "error", "message": "internal_server_error"})
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------
-# Main entrypoint
-# ---------------------------------------------------------------------
-
+# -------------------------------------------------------------------
+# Uvicorn entrypoint
+# -------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "server_enhanced:app",   # filename:app_name
+        "server_enhanced:app",
         host="0.0.0.0",
-        port=8000,
-        reload=True,             # disable in production
+        port=8001,
+        reload=False,
     )
