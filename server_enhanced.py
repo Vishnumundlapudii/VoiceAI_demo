@@ -172,28 +172,28 @@ class EnhancedVoiceHandler:
 
             speech_ratio = speech_energy / (total_energy + 1e-10)
 
-            # ACCURACY FIRST: More sensitive thresholds to catch all speech
+            # FIXED: Balanced thresholds to prevent false positives from background noise
             if assistant_speaking:
-                # More sensitive during interruption
-                energy_threshold = 0.005  # Lower = more sensitive
-                zcr_min, zcr_max = 0.02, 0.8  # Wider range
-                speech_ratio_threshold = 0.2  # Lower = more sensitive
-                logger.debug(f"🎤 Interruption - Energy: {energy:.4f}, ZCR: {zcr:.3f}, SpeechRatio: {speech_ratio:.3f}")
+                # Sensitive during interruption but not too much
+                energy_threshold = 0.015  # Increased from 0.005
+                zcr_min, zcr_max = 0.05, 0.6  # Tighter range
+                speech_ratio_threshold = 0.3  # Increased from 0.2
+                logger.debug(f"🎤 Interruption Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
             else:
-                # VERY SENSITIVE normal speech detection
-                energy_threshold = 0.010  # Lower = more sensitive
-                zcr_min, zcr_max = 0.05, 0.7  # Wider range
-                speech_ratio_threshold = 0.25  # Lower = more sensitive
-                logger.debug(f"🎤 SENSITIVE VAD - Energy: {energy:.4f}, ZCR: {zcr:.3f}, SpeechRatio: {speech_ratio:.3f}")
+                # Balanced normal speech detection - prevent false triggers
+                energy_threshold = 0.025  # Significantly increased from 0.010
+                zcr_min, zcr_max = 0.08, 0.5  # Much tighter range
+                speech_ratio_threshold = 0.35  # Increased from 0.25
+                logger.debug(f"🎤 Normal Mode - E: {energy:.4f}, ZCR: {zcr:.3f}, SR: {speech_ratio:.3f}")
 
             # Combine multiple indicators
             energy_speech = energy > energy_threshold
             zcr_speech = zcr_min < zcr < zcr_max  # Speech has moderate ZCR
             spectral_speech = speech_ratio > speech_ratio_threshold
 
-            # Decision logic: at least 2 out of 3 indicators must agree
+            # FIXED: Require ALL 3 indicators to agree to prevent false positives
             speech_indicators = [energy_speech, zcr_speech, spectral_speech]
-            speech_detected = sum(speech_indicators) >= 2
+            speech_detected = sum(speech_indicators) >= 3  # All must agree
 
             if speech_detected:
                 confidence = sum(speech_indicators) / 3.0
