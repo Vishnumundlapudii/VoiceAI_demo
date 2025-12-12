@@ -14,7 +14,7 @@ load_dotenv()
 # =============================================================================
 
 WHISPER_API = os.getenv("WHISPER_API", "http://your-whisper-endpoint:8000/transcribe")
-TTS_API = os.getenv("TTS_API", "http://your-tts-endpoint:8000/v1/audio/speech")
+TTS_API = os.getenv("TTS_API", "http://216.48.191.105:8000/v1/audio/speech")
 LLAMA_BASE_URL = os.getenv("LLAMA_BASE_URL", "https://your-llama-endpoint/v1")
 E2E_TOKEN = os.getenv("E2E_TOKEN", "your-token-here")
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
